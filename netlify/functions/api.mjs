@@ -1,0 +1,315 @@
+// Field Budget API — single Netlify Function, routed internally.
+// netlify.toml rewrites /api/* here, so req.url still carries the original path.
+
+import { json, corsHeaders, readCookie, sessionCookie, normaliseEmail } from './lib/http.mjs';
+import { db, adminEmails, assignedBudgetIds, coerceMoney } from './lib/db.mjs';
+import {
+  issueSession, currentEmail, SESSION_MAX_AGE,
+  emailFromGoogleCredential, createMagicToken, consumeMagicToken,
+  sendMagicLink, emailIsKnown,
+} from './lib/auth.mjs';
+import { ensureBudgetFolder, uploadReceipt, receiptBytes } from './lib/drive.mjs';
+
+const MONEY_BUDGET = ['funded_base'];
+const MONEY_CAT = ['allocated'];
+const MONEY_ENTRY = ['amount', 'budget_amount', 'actual_base'];
+
+function apiPath(request) {
+  let p = new URL(request.url).pathname;
+  // Depending on how the rewrite resolves, the function may see either form.
+  p = p.replace(/^\/\.netlify\/functions\/api/, '');
+  if (!p.startsWith('/api')) p = `/api${p}`;
+  return p.replace(/\/+$/, '') || '/api';
+}
+
+/* ---------------- auth routes ---------------- */
+
+async function postGoogle(request) {
+  const { credential } = await request.json();
+  if (!credential) return json({ error: 'Missing credential' }, 400, request);
+
+  let email;
+  try {
+    email = await emailFromGoogleCredential(credential);
+  } catch {
+    return json({ error: 'Could not verify that Google sign-in' }, 401, request);
+  }
+  if (!email) return json({ error: 'That Google account has no verified email' }, 401, request);
+  if (!(await emailIsKnown(email))) {
+    return json({ error: 'not_assigned', email }, 403, request);
+  }
+
+  const token = await issueSession(email);
+  return json({ email }, 200, request, { 'set-cookie': sessionCookie(token, SESSION_MAX_AGE) });
+}
+
+async function postMagicRequest(request) {
+  const { email: raw } = await request.json();
+  const email = normaliseEmail(raw);
+  // Always report success. Telling an anonymous caller which addresses exist is
+  // a free directory of your staff.
+  if (email && (await emailIsKnown(email))) {
+    const token = await createMagicToken(email);
+    const base = process.env.APP_ORIGIN || new URL(request.url).origin;
+    await sendMagicLink(email, `${base}/api/auth/magic?token=${token}`);
+  }
+  return json({ sent: true }, 200, request);
+}
+
+async function getMagicVerify(request) {
+  const token = new URL(request.url).searchParams.get('token');
+  const base = process.env.APP_ORIGIN || new URL(request.url).origin;
+  const email = token ? await consumeMagicToken(token) : null;
+  if (!email) {
+    return new Response(null, { status: 302, headers: { location: `${base}/?auth=expired` } });
+  }
+  const session = await issueSession(normaliseEmail(email));
+  return new Response(null, {
+    status: 302,
+    headers: { location: `${base}/`, 'set-cookie': sessionCookie(session, SESSION_MAX_AGE) },
+  });
+}
+
+function postLogout(request) {
+  return json({ ok: true }, 200, request, { 'set-cookie': sessionCookie('', 0) });
+}
+
+/* ---------------- instructor routes ---------------- */
+
+// Everything the app needs to run offline: budgets, categories, and every entry
+// on them. Small enough at programme scale to send whole rather than paginate.
+async function getMe(request, email) {
+  const sql = db();
+  const ids = await assignedBudgetIds(email);
+  const isAdmin = adminEmails().includes(email);
+  if (!ids.length) return json({ email, is_admin: isAdmin, budgets: [], entries: [] }, 200, request);
+
+  const [budgets, categories, entries] = await Promise.all([
+    sql`select * from budgets where id = any(${ids}) and status = 'active'`,
+    sql`select * from categories where budget_id = any(${ids}) order by sort_order`,
+    sql`select * from entries where budget_id = any(${ids}) order by received_at`,
+  ]);
+
+  const cats = categories.map((c) => coerceMoney(c, MONEY_CAT));
+  const shaped = budgets.map((b) => ({
+    ...coerceMoney(b, MONEY_BUDGET),
+    default_rate: Number(b.default_rate),
+    categories: cats.filter((c) => c.budget_id === b.id),
+  }));
+
+  return json({
+    email,
+    is_admin: isAdmin,
+    budgets: shaped,
+    entries: entries.map((e) => ({ ...coerceMoney(e, MONEY_ENTRY), rate: Number(e.rate) })),
+    server_time: new Date().toISOString(),
+  }, 200, request);
+}
+
+// Append-only and idempotent. A device that resurfaces after eleven days offline
+// posts its whole outbox; anything already stored is skipped.
+async function postSync(request, email) {
+  const sql = db();
+  const body = await request.json();
+  const incoming = Array.isArray(body.entries) ? body.entries : [];
+  if (incoming.length > 500) return json({ error: 'Batch too large, split it' }, 413, request);
+
+  const allowed = new Set(await assignedBudgetIds(email));
+  const accepted = [];
+  const rejected = [];
+
+  for (const e of incoming) {
+    if (!e.id || !allowed.has(e.budget_id)) {
+      rejected.push({ id: e.id, reason: 'not_assigned' });
+      continue;
+    }
+    try {
+      await sql`
+        insert into entries (
+          id, budget_id, category_id, email, entry_type, group_id, spent_on, amount,
+          currency, rate, budget_amount, payment_method, description,
+          receipt_file_id, receipt_link, corrects_id, created_at
+        ) values (
+          ${e.id}, ${e.budget_id}, ${e.category_id ?? null}, ${email}, ${e.entry_type},
+          ${e.group_id ?? null}, ${e.spent_on}, ${Math.round(e.amount)}, ${e.currency},
+          ${e.rate ?? 1}, ${Math.round(e.budget_amount)}, ${e.payment_method ?? 'cash'},
+          ${e.description ?? ''}, ${e.receipt_file_id ?? null}, ${e.receipt_link ?? null},
+          ${e.corrects_id ?? null}, ${e.created_at}
+        )
+        on conflict (id) do nothing`;
+      accepted.push(e.id);
+    } catch (err) {
+      rejected.push({ id: e.id, reason: String(err.message || err) });
+    }
+  }
+  return json({ accepted, rejected }, 200, request);
+}
+
+// Receipts go up on their own request so a stuck photo on a bad uplink never
+// blocks a small taxi fare from syncing.
+async function putReceipt(request, email, entryId) {
+  const sql = db();
+  const budgetId = new URL(request.url).searchParams.get('budget');
+  if (!budgetId || !entryId) return json({ error: 'Missing budget or entry' }, 400, request);
+
+  const allowed = new Set(await assignedBudgetIds(email));
+  if (!allowed.has(budgetId)) return json({ error: 'Not assigned' }, 403, request);
+
+  const bytes = await request.arrayBuffer();
+  if (bytes.byteLength > 4_000_000) return json({ error: 'Receipt too large' }, 413, request);
+
+  const rows = await sql`select * from budgets where id = ${budgetId}`;
+  if (!rows.length) return json({ error: 'No such budget' }, 404, request);
+
+  const folderId = await ensureBudgetFolder(sql, rows[0]);
+  const stamp = new Date().toISOString().slice(0, 10);
+  const uploaded = await uploadReceipt({
+    folderId,
+    name: `${stamp}-${email.split('@')[0]}-${entryId.slice(0, 8)}.jpg`,
+    contentType: request.headers.get('content-type') || 'image/jpeg',
+    bytes,
+  });
+
+  // The entry may not have synced yet; when it does, sync carries these fields.
+  await sql`
+    update entries set receipt_file_id = ${uploaded.id}, receipt_link = ${uploaded.webViewLink ?? null}
+    where id = ${entryId}`;
+
+  return json({ file_id: uploaded.id, link: uploaded.webViewLink ?? null }, 200, request);
+}
+
+async function getReceipt(request, email, fileId) {
+  const sql = db();
+  const rows = await sql`
+    select e.id from entries e
+    join assignments a on a.budget_id = e.budget_id
+    where e.receipt_file_id = ${fileId} and a.email = ${email} limit 1`;
+  if (!rows.length && !adminEmails().includes(email)) {
+    return json({ error: 'Not found' }, 404, request);
+  }
+  const upstream = await receiptBytes(fileId);
+  return new Response(upstream.body, {
+    headers: {
+      'content-type': upstream.headers.get('content-type') || 'image/jpeg',
+      'cache-control': 'private, max-age=86400',
+      ...corsHeaders(request),
+    },
+  });
+}
+
+/* ---------------- admin routes ---------------- */
+
+async function adminRouter(request, email, path) {
+  if (!adminEmails().includes(email)) return json({ error: 'Not an admin' }, 403, request);
+  const sql = db();
+  const method = request.method;
+
+  if (path === '/api/admin/budgets' && method === 'GET') {
+    const [budgets, categories, assignments, spend] = await Promise.all([
+      sql`select * from budgets order by created_at desc`,
+      sql`select * from categories order by sort_order`,
+      sql`select * from assignments`,
+      sql`select budget_id, category_id, sum(budget_amount)::bigint as spent
+           from entries where entry_type in ('expense','correction')
+           group by budget_id, category_id`,
+    ]);
+    return json({
+      budgets: budgets.map((b) => ({ ...coerceMoney(b, MONEY_BUDGET), default_rate: Number(b.default_rate) })),
+      categories: categories.map((c) => coerceMoney(c, MONEY_CAT)),
+      assignments,
+      spend: spend.map((s) => ({ ...s, spent: Number(s.spent) })),
+    }, 200, request);
+  }
+
+  if (path === '/api/admin/budgets' && method === 'POST') {
+    const b = await request.json();
+    if (!b.name || !b.currency) return json({ error: 'Name and currency are required' }, 400, request);
+    const id = b.id || `bud_${crypto.randomUUID().slice(0, 8)}`;
+
+    await sql`
+      insert into budgets (id, name, currency, base_currency, default_rate, funded_base, starts_on, ends_on)
+      values (${id}, ${b.name}, ${b.currency}, ${b.base_currency || 'NZD'},
+              ${b.default_rate || 1}, ${b.funded_base ?? null},
+              ${b.starts_on || null}, ${b.ends_on || null})`;
+
+    for (const [i, c] of (b.categories || []).entries()) {
+      await sql`
+        insert into categories (id, budget_id, name, allocated, sort_order)
+        values (${`cat_${crypto.randomUUID().slice(0, 8)}`}, ${id}, ${c.name},
+                ${Math.round(c.allocated)}, ${i + 1})`;
+    }
+    for (const raw of (b.emails || [])) {
+      const em = normaliseEmail(raw);
+      if (em) {
+        await sql`insert into assignments (budget_id, email) values (${id}, ${em})
+                  on conflict do nothing`;
+      }
+    }
+    return json({ id }, 201, request);
+  }
+
+  const assignMatch = path.match(/^\/api\/admin\/budgets\/([^/]+)\/assignments$/);
+  if (assignMatch && method === 'POST') {
+    const { emails } = await request.json();
+    const added = [];
+    for (const raw of emails || []) {
+      const em = normaliseEmail(raw);
+      if (!em) continue;
+      await sql`insert into assignments (budget_id, email) values (${assignMatch[1]}, ${em})
+                on conflict do nothing`;
+      added.push(em);
+    }
+    return json({ added }, 200, request);
+  }
+
+  const entriesMatch = path.match(/^\/api\/admin\/budgets\/([^/]+)\/entries$/);
+  if (entriesMatch && method === 'GET') {
+    const rows = await sql`
+      select * from entries where budget_id = ${entriesMatch[1]}
+      order by spent_on, created_at`;
+    return json({
+      entries: rows.map((e) => ({ ...coerceMoney(e, MONEY_ENTRY), rate: Number(e.rate) })),
+    }, 200, request);
+  }
+
+  return json({ error: 'Not found' }, 404, request);
+}
+
+/* ---------------- entry point ---------------- */
+
+export default async function handler(request) {
+  const path = apiPath(request);
+
+  if (request.method === 'OPTIONS') {
+    return new Response(null, { status: 204, headers: corsHeaders(request) });
+  }
+
+  try {
+    // Public: the sign-in paths themselves.
+    if (path === '/api/auth/google' && request.method === 'POST') return await postGoogle(request);
+    if (path === '/api/auth/magic-link' && request.method === 'POST') return await postMagicRequest(request);
+    if (path === '/api/auth/magic' && request.method === 'GET') return await getMagicVerify(request);
+    if (path === '/api/auth/logout') return postLogout(request);
+    // Public so the static app can render the Google button without a build step.
+    if (path === '/api/auth/config') {
+      return json({ google_client_id: process.env.GOOGLE_CLIENT_ID || null }, 200, request);
+    }
+
+    const email = await currentEmail(request);
+    if (!email) return json({ error: 'signed_out' }, 401, request);
+
+    if (path === '/api/me') return await getMe(request, email);
+    if (path === '/api/sync' && request.method === 'POST') return await postSync(request, email);
+
+    const put = path.match(/^\/api\/receipts\/([^/]+)$/);
+    if (put && request.method === 'PUT') return await putReceipt(request, email, put[1]);
+    if (put && request.method === 'GET') return await getReceipt(request, email, put[1]);
+
+    if (path.startsWith('/api/admin/')) return await adminRouter(request, email, path);
+
+    return json({ error: 'Not found' }, 404, request);
+  } catch (err) {
+    console.error('api error', err);
+    return json({ error: String(err.message || err) }, 500, request);
+  }
+}

@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Programme budgets</title>
+<style>
+:root {
+  --paper:#F2F3EF; --card:#fff; --ink:#1A231D; --muted:#67766C;
+  --rule:#D8DDD5; --gauge:#C3CBBF; --deep:#14584A; --over:#9C3B27;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font-family:"IBM Plex Sans",ui-sans-serif,system-ui,-apple-system,sans-serif;line-height:1.5}
+.num{font-family:"IBM Plex Mono",ui-monospace,Menlo,monospace;font-variant-numeric:tabular-nums}
+.wrap{max-width:1080px;margin:0 auto;padding:28px 24px 80px}
+h1{font-size:1.35rem;margin:0 0 4px}
+.lede{color:var(--muted);margin:0 0 28px;max-width:62ch}
+h2{font-size:.86rem;font-weight:600;color:var(--muted);margin:32px 0 10px}
+.grid{display:grid;grid-template-columns:1fr 380px;gap:24px;align-items:start}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+
+.card{background:var(--card);border:1px solid var(--rule);border-radius:10px;padding:18px}
+.budget{margin-bottom:12px}
+.budget-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:12px}
+.budget-name{font-weight:600}
+.budget-cur{font-size:.78rem;color:var(--muted)}
+
+.rows{display:flex;flex-direction:column;gap:7px}
+.row{position:relative;padding:9px 2px 12px}
+.row-top{display:flex;justify-content:space-between;gap:12px;font-size:.92rem}
+.row-meta{font-size:.74rem;color:var(--muted)}
+.track{position:absolute;left:0;right:0;bottom:0;height:4px;background:var(--gauge);border-radius:2px}
+.fill{height:100%;background:var(--deep);border-radius:2px}
+.row.over .fill{background:var(--over)}
+.row.over .row-top span:last-child{color:var(--over)}
+
+.people{margin-top:14px;padding-top:14px;border-top:1px solid var(--rule)}
+.pill{display:inline-block;background:var(--paper);border:1px solid var(--rule);
+  border-radius:999px;padding:4px 11px;font-size:.78rem;margin:0 6px 6px 0}
+
+label{display:block;margin:14px 0 5px;font-size:.8rem;font-weight:500;color:var(--muted)}
+input,select{width:100%;font:inherit;color:var(--ink);background:var(--card);
+  border:1px solid var(--rule);border-radius:8px;padding:9px 10px}
+input:focus,select:focus{outline:2px solid var(--deep);outline-offset:-1px}
+.two{display:flex;gap:10px}.two>div{flex:1}
+
+.catrow{display:flex;gap:8px;margin-bottom:7px}
+.catrow input:first-child{flex:2}.catrow input:last-of-type{flex:1;text-align:right;
+  font-family:"IBM Plex Mono",monospace;font-variant-numeric:tabular-nums}
+.x{flex:none;width:36px;border:1px solid var(--rule);background:var(--card);
+  border-radius:8px;color:var(--muted);cursor:pointer;font:inherit}
+.addcat{margin-top:4px;border:1px dashed var(--rule);background:none;color:var(--deep);
+  border-radius:8px;padding:8px 12px;font:inherit;font-weight:500;cursor:pointer}
+
+button.go{width:100%;margin-top:20px;padding:12px;border:0;border-radius:8px;
+  background:var(--deep);color:#fff;font:inherit;font-weight:600;cursor:pointer}
+.hint{font-size:.76rem;color:var(--muted);margin-top:6px}
+.err{font-size:.8rem;color:var(--over);margin-top:6px}
+.empty{color:var(--muted);font-size:.9rem;padding:18px;border:1px dashed var(--rule);border-radius:10px;background:var(--card)}
+.total{display:flex;justify-content:space-between;margin-top:12px;padding-top:12px;
+  border-top:1px solid var(--rule);font-weight:600;font-size:.92rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Programme budgets</h1>
+  <p class="lede">Set the allocation for each category in the currency instructors will actually spend in, then assign the instructors who should see it. They log against it from the field app.</p>
+
+  <div class="grid">
+    <div>
+      <h2>Active budgets</h2>
+      <div id="list"><div class="empty">Loading…</div></div>
+    </div>
+
+    <div>
+      <h2>New budget</h2>
+      <div class="card">
+        <label for="bname">Name</label>
+        <input id="bname" placeholder="Peru — Feb 2026">
+
+        <div class="two">
+          <div>
+            <label for="bcur">Budget currency</label>
+            <select id="bcur">
+              <option>PEN</option><option>USD</option><option>EUR</option><option>NZD</option>
+            </select>
+          </div>
+          <div>
+            <label for="brate">Planning rate</label>
+            <input class="num" id="brate" type="number" step="0.0001" value="3.34">
+          </div>
+        </div>
+        <p class="hint">Budget currency per 1 USD, prefilled on foreign-currency entries. Instructors can override.</p>
+
+        <div class="two">
+          <div><label for="bstart">Starts</label><input id="bstart" type="date"></div>
+          <div><label for="bend">Ends</label><input id="bend" type="date"></div>
+        </div>
+
+        <label>Categories</label>
+        <div id="cats"></div>
+        <button class="addcat" type="button" id="addcat">Add category</button>
+        <div class="total"><span>Total allocated</span><span class="num" id="total">0.00</span></div>
+
+        <label for="emails">Instructors</label>
+        <input id="emails" placeholder="katie@…, manuel@…">
+        <p class="hint">Comma separated. They sign in with Google or an emailed code — whichever they use, the address has to match.</p>
+
+        <p class="err" id="err" hidden></p>
+        <button class="go" type="button" id="create">Create budget</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// The admin page is served from the dashboard site, so the API is a different
+// origin. credentials:'include' sends the session cookie, which works because
+// both hosts are subdomains of pacificdiscovery.org and the cookie is scoped to
+// the parent domain.
+const API = 'https://budget.pacificdiscovery.org/api';
+const FETCH = { credentials: 'include' };
+const DEFAULTS = ['Food', 'Transport', 'Gratuities', 'Activities', 'Misc', 'First aid'];
+const fmt = (m, c) => new Intl.NumberFormat('en-NZ',
+  { style: 'currency', currency: c, currencyDisplay: 'code' }).format(m / 100);
+
+/* ---- category editor ---- */
+const cats = document.getElementById('cats');
+function addCat(name = '', amount = '') {
+  const row = document.createElement('div');
+  row.className = 'catrow';
+  row.innerHTML = `<input placeholder="Category" value="${name}">
+    <input type="number" step="0.01" placeholder="0.00" value="${amount}">
+    <button class="x" type="button" aria-label="Remove">×</button>`;
+  row.querySelector('.x').addEventListener('click', () => { row.remove(); total(); });
+  row.querySelectorAll('input').forEach(i => i.addEventListener('input', total));
+  cats.append(row);
+}
+function total() {
+  const cur = document.getElementById('bcur').value;
+  const sum = [...cats.querySelectorAll('.catrow')]
+    .reduce((n, r) => n + (Number(r.querySelectorAll('input')[1].value) || 0), 0);
+  document.getElementById('total').textContent = fmt(Math.round(sum * 100), cur);
+}
+DEFAULTS.forEach(n => addCat(n));
+document.getElementById('addcat').addEventListener('click', () => addCat());
+document.getElementById('bcur').addEventListener('change', total);
+total();
+
+/* ---- list ---- */
+async function load() {
+  const list = document.getElementById('list');
+  try {
+    const res = await fetch(`${API}/admin/budgets`, FETCH);
+    if (!res.ok) throw new Error(res.status);
+    const d = await res.json();
+    if (!d.budgets.length) {
+      list.innerHTML = '<div class="empty">No budgets yet. Create one on the right and it appears in the field app straight away.</div>';
+      return;
+    }
+    list.innerHTML = '';
+    for (const b of d.budgets) {
+      const bc = d.categories.filter(c => c.budget_id === b.id);
+      const spent = Object.fromEntries(
+        d.spend.filter(s => s.budget_id === b.id).map(s => [s.category_id, s.spent]));
+      const people = d.assignments.filter(a => a.budget_id === b.id);
+
+      const card = document.createElement('div');
+      card.className = 'card budget';
+      card.innerHTML = `
+        <div class="budget-head">
+          <span class="budget-name">${b.name}</span>
+          <span class="budget-cur">${b.currency} · rate ${b.default_rate}</span>
+        </div>
+        <div class="rows">${bc.map(c => {
+          const s = spent[c.id] || 0;
+          const pct = c.allocated > 0 ? Math.min(100, s / c.allocated * 100) : (s > 0 ? 100 : 0);
+          const over = s > c.allocated;
+          return `<div class="row ${over ? 'over' : ''}">
+            <div class="row-top"><span>${c.name}</span>
+              <span class="num">${fmt(c.allocated - s, b.currency)}</span></div>
+            <div class="row-meta num">${fmt(s, b.currency)} of ${fmt(c.allocated, b.currency)}</div>
+            <div class="track"><div class="fill" style="width:${pct}%"></div></div>
+          </div>`;
+        }).join('')}</div>
+        <div class="people">${people.length
+          ? people.map(p => `<span class="pill">${p.email}</span>`).join('')
+          : '<span class="hint">No instructors assigned — nobody can log against this yet.</span>'}</div>`;
+      list.append(card);
+    }
+  } catch {
+    list.innerHTML = '<div class="empty">Could not reach the budget API. If you are signed out, open the field app once to sign in — this page shares that session.</div>';
+  }
+}
+
+/* ---- create ---- */
+document.getElementById('create').addEventListener('click', async () => {
+  const err = document.getElementById('err');
+  const name = document.getElementById('bname').value.trim();
+  const currency = document.getElementById('bcur').value;
+  const rows = [...cats.querySelectorAll('.catrow')].map(r => {
+    const i = r.querySelectorAll('input');
+    return { name: i[0].value.trim(), allocated: Math.round((Number(i[1].value) || 0) * 100) };
+  }).filter(c => c.name);
+
+  if (!name) { err.textContent = 'Give the budget a name.'; err.hidden = false; return; }
+  if (!rows.length) { err.textContent = 'Add at least one category.'; err.hidden = false; return; }
+  err.hidden = true;
+
+  const emails = document.getElementById('emails').value.split(',').map(s => s.trim()).filter(Boolean);
+  const res = await fetch(`${API}/admin/budgets`, {
+    method: 'POST', credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      name, currency,
+      default_rate: Number(document.getElementById('brate').value) || 1,
+      starts_on: document.getElementById('bstart').value || null,
+      ends_on: document.getElementById('bend').value || null,
+      categories: rows, emails,
+    }),
+  });
+
+  if (!res.ok) { err.textContent = 'Could not save. ' + (await res.text()); err.hidden = false; return; }
+  document.getElementById('bname').value = '';
+  document.getElementById('emails').value = '';
+  load();
+});
+
+load();
+</script>
+</body>
+</html>

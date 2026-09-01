@@ -1,1 +1,51 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#F2F3EF">
+<title>Field Budget</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
 
+<header class="bar">
+  <div class="bar-id">
+    <span class="bar-name" id="budgetName">Loading</span>
+    <span class="bar-sub" id="budgetSub"></span>
+  </div>
+  <button class="chip" id="syncChip" type="button">Checking</button>
+</header>
+
+<main id="view"></main>
+
+<section class="signin" id="signin" hidden>
+  <h1>Field Budget</h1>
+  <p class="signin-lede">Sign in with the address your programme director assigned to the budget.</p>
+  <div id="gbtn" class="gbtn"></div>
+  <p class="signin-or">or</p>
+  <label for="magicEmail">Email a sign-in link</label>
+  <input id="magicEmail" type="email" inputmode="email" autocomplete="email" placeholder="you@pacificdiscovery.org">
+  <button class="submit" type="button" id="magicSend">Send link</button>
+  <p class="hint" id="signinMsg"></p>
+</section>
+
+<nav class="dock">
+  <button class="dock-btn primary" type="button" data-open="spend">Log spend</button>
+  <button class="dock-btn" type="button" data-open="cash">Cash</button>
+  <button class="dock-btn" type="button" data-open="history">History</button>
+</nav>
+
+<div class="scrim" id="scrim" hidden></div>
+
+<section class="sheet" id="sheet" hidden aria-modal="true" role="dialog">
+  <div class="sheet-grip"></div>
+  <div class="sheet-body" id="sheetBody"></div>
+</section>
+
+<div class="toast" id="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

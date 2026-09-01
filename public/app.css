@@ -1,0 +1,246 @@
+/* Field Budget — instructor app
+   Read in bright Andean sun and in a dim hostel at 9pm. High contrast, big
+   targets, tabular numerals so columns of money line up and can be scanned. */
+
+:root {
+  --paper: #F2F3EF;
+  --card: #FFFFFF;
+  --ink: #1A231D;
+  --muted: #67766C;
+  --rule: #D8DDD5;
+  --gauge: #C3CBBF;
+  --deep: #14584A;
+  --deep-soft: #E4EDE8;
+  --over: #9C3B27;
+  --over-soft: #F6E5E0;
+  --pad: 16px;
+  --radius: 10px;
+  font-size: 17px;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  line-height: 1.45;
+  overscroll-behavior-y: none;
+}
+
+.num {
+  font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+}
+
+/* ---- top bar ---- */
+.bar {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 12px;
+  padding: calc(env(safe-area-inset-top) + 10px) var(--pad) 10px;
+  background: var(--paper);
+  border-bottom: 1px solid var(--rule);
+}
+.bar-id { flex: 1; min-width: 0; }
+.bar-name { display: block; font-weight: 600; font-size: 1rem; }
+.bar-sub { display: block; font-size: 0.78rem; color: var(--muted); }
+
+.chip {
+  flex: none; border: 1px solid var(--rule); background: var(--card);
+  color: var(--muted); border-radius: 999px;
+  padding: 7px 13px; font: inherit; font-size: 0.78rem; cursor: pointer;
+}
+.chip[data-state="pending"] { border-color: var(--deep); color: var(--deep); background: var(--deep-soft); font-weight: 600; }
+.chip[data-state="offline"] { border-color: var(--over); color: var(--over); background: var(--over-soft); }
+
+/* ---- main ---- */
+main { padding: var(--pad) var(--pad) 108px; max-width: 560px; margin: 0 auto; }
+.dock, .sheet-body { max-width: 560px; margin-left: auto; margin-right: auto; }
+
+.section-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin: 22px 2px 10px;
+}
+.section-head:first-child { margin-top: 4px; }
+.section-head h2 { margin: 0; font-size: 0.86rem; font-weight: 600; color: var(--muted); }
+.section-head span { font-size: 0.78rem; color: var(--muted); }
+
+/* ---- category gauges: the signature element ----
+   Each row is a fuel gauge. The bar is the row's own bottom edge, so the
+   remaining balance reads without any legend. */
+.gauge-list { display: flex; flex-direction: column; gap: 8px; }
+
+.gauge {
+  position: relative; width: 100%; text-align: left;
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: var(--radius); padding: 13px 14px 16px;
+  font: inherit; color: inherit; cursor: pointer;
+  overflow: hidden;
+}
+.gauge:active { background: #FAFBF9; }
+.gauge:focus-visible { outline: 2px solid var(--deep); outline-offset: 2px; }
+
+.gauge-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.gauge-name { font-weight: 500; }
+.gauge-left { font-size: 1.02rem; font-weight: 600; }
+.gauge-meta { margin-top: 2px; font-size: 0.76rem; color: var(--muted); }
+
+.gauge-track {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 5px;
+  background: var(--gauge);
+}
+.gauge-fill { height: 100%; background: var(--deep); transition: width .3s ease; }
+.gauge.over .gauge-left { color: var(--over); }
+.gauge.over .gauge-fill { background: var(--over); }
+
+/* ---- cash float ---- */
+.float-row {
+  display: flex; justify-content: space-between; align-items: baseline;
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: var(--radius); padding: 12px 14px; margin-bottom: 8px;
+}
+.float-cur { font-weight: 500; }
+.float-amt { font-weight: 600; }
+.float-amt.negative { color: var(--over); }
+
+.empty {
+  background: var(--card); border: 1px dashed var(--rule);
+  border-radius: var(--radius); padding: 22px 18px; color: var(--muted);
+  font-size: 0.9rem;
+}
+
+/* ---- history ---- */
+.entry {
+  display: flex; gap: 12px; padding: 12px 2px;
+  border-bottom: 1px solid var(--rule);
+}
+.entry:last-child { border-bottom: 0; }
+.entry-main { flex: 1; min-width: 0; }
+.entry-desc { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entry-meta { font-size: 0.76rem; color: var(--muted); }
+.entry-amt { font-weight: 600; white-space: nowrap; }
+.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--deep); margin-right: 5px; vertical-align: middle; }
+.dot.pending { background: var(--over); }
+
+/* ---- dock ---- */
+.dock {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+  display: flex; gap: 8px;
+  padding: 10px var(--pad) calc(env(safe-area-inset-bottom) + 10px);
+  background: var(--paper); border-top: 1px solid var(--rule);
+}
+.dock-btn {
+  flex: 1; min-height: 52px; border-radius: var(--radius);
+  border: 1px solid var(--rule); background: var(--card);
+  font: inherit; font-weight: 500; color: var(--ink); cursor: pointer;
+}
+.dock-btn.primary { flex: 2; background: var(--deep); border-color: var(--deep); color: #fff; font-weight: 600; }
+.dock-btn:active { transform: translateY(1px); }
+
+/* ---- sheet ---- */
+.scrim { position: fixed; inset: 0; background: rgba(26,35,29,.42); z-index: 30; }
+.sheet {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
+  max-height: 92vh; overflow-y: auto; overflow-x: hidden;
+  background: var(--paper);
+  border-radius: 18px 18px 0 0;
+  padding: 8px var(--pad) calc(env(safe-area-inset-bottom) + 20px);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .sheet { animation: rise .18s ease-out; }
+  @keyframes rise { from { transform: translateY(18px); opacity: .6; } }
+}
+.sheet-grip { width: 38px; height: 4px; border-radius: 2px; background: var(--rule); margin: 6px auto 14px; }
+.sheet h2 { margin: 0 0 14px; font-size: 1.1rem; }
+
+/* ---- forms ---- */
+label { display: block; margin: 14px 0 6px; font-size: 0.82rem; font-weight: 500; color: var(--muted); }
+input, select, textarea {
+  width: 100%; max-width: 100%; min-width: 0;
+  font: inherit; color: var(--ink);
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: var(--radius); padding: 13px 12px; min-height: 50px;
+}
+
+/* Date inputs carry an intrinsic width from their shadow DOM that width:100%
+   does not beat on mobile Safari. Without this the row overflows the viewport
+   and the fixed dock and sheet detach from the visible area. */
+input[type="date"] {
+  -webkit-appearance: none; appearance: none;
+  display: block; height: 50px; line-height: normal;
+}
+input[type="date"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
+input[type="date"]::-webkit-calendar-picker-indicator { margin-left: 4px; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--deep); outline-offset: -1px; border-color: var(--deep); }
+input[type="number"] { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+
+.amount-input { font-size: 1.7rem; font-weight: 600; text-align: right; padding: 14px 12px; min-height: 62px; }
+
+.field-row { display: flex; gap: 10px; }
+/* min-width:0 is required — flex items default to min-width:auto and will not
+   shrink below their content, which is what pushes the row off screen. */
+.field-row > div { flex: 1; min-width: 0; }
+
+.seg { display: flex; gap: 8px; }
+.seg button {
+  flex: 1; min-height: 50px; border-radius: var(--radius);
+  border: 1px solid var(--rule); background: var(--card);
+  font: inherit; color: var(--ink); cursor: pointer;
+}
+.seg button[aria-pressed="true"] { background: var(--deep); border-color: var(--deep); color: #fff; font-weight: 600; }
+
+.receipt {
+  display: flex; align-items: center; gap: 12px;
+  border: 1px dashed var(--rule); background: var(--card);
+  border-radius: var(--radius); padding: 12px; margin-top: 6px;
+}
+.receipt img { width: 54px; height: 54px; object-fit: cover; border-radius: 6px; }
+.receipt-btn { flex: 1; min-height: 44px; border: 0; background: none; font: inherit; text-align: left; color: var(--deep); font-weight: 500; cursor: pointer; }
+
+.hint { font-size: 0.78rem; color: var(--muted); margin-top: 6px; }
+.hint strong { font-weight: 600; color: var(--ink); }
+.error { font-size: 0.82rem; color: var(--over); margin-top: 6px; }
+
+.submit {
+  width: 100%; min-height: 56px; margin-top: 22px;
+  border: 0; border-radius: var(--radius);
+  background: var(--deep); color: #fff; font: inherit; font-weight: 600; font-size: 1.02rem;
+  cursor: pointer;
+}
+.submit:active { transform: translateY(1px); }
+.ghost {
+  width: 100%; min-height: 48px; margin-top: 8px;
+  border: 1px solid var(--rule); border-radius: var(--radius);
+  background: none; color: var(--muted); font: inherit; cursor: pointer;
+}
+
+/* ---- toast ---- */
+.toast {
+  position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
+  z-index: 50; max-width: 88vw;
+  background: var(--ink); color: var(--paper);
+  border-radius: 999px; padding: 11px 20px; font-size: 0.88rem;
+}
+
+/* ---- sign-in ----
+   Shown when /api/me says signed_out. Cloudflare Access used to cover this
+   invisibly; on Netlify it is a screen the instructor actually sees. */
+.signin {
+  max-width: 400px; margin: 0 auto;
+  padding: calc(env(safe-area-inset-top) + 48px) var(--pad) 40px;
+}
+.signin h1 { margin: 0 0 6px; font-size: 1.4rem; }
+.signin-lede { margin: 0 0 26px; color: var(--muted); font-size: 0.92rem; }
+.gbtn { min-height: 44px; display: flex; justify-content: center; }
+.signin-or {
+  display: flex; align-items: center; gap: 12px;
+  margin: 24px 0 4px; color: var(--muted); font-size: 0.8rem;
+}
+.signin-or::before, .signin-or::after {
+  content: ''; flex: 1; height: 1px; background: var(--rule);
+}
+body.signed-out .bar, body.signed-out .dock, body.signed-out main { display: none; }

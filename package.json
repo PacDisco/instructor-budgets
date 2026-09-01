@@ -1,0 +1,19 @@
+{
+  "name": "field-budget",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Instructor field expense logging — Netlify Functions, Neon, Google Drive receipts",
+  "type": "module",
+  "scripts": {
+    "dev": "netlify dev",
+    "db:init": "psql \"$DATABASE_URL\" -f db/schema.sql",
+    "check": "node --check netlify/functions/api.mjs && node --check public/app.js"
+  },
+  "dependencies": {
+    "@neondatabase/serverless": "^0.10.4",
+    "jose": "^5.9.6"
+  },
+  "devDependencies": {
+    "netlify-cli": "^17.38.0"
+  }
+}
