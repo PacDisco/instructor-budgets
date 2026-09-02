@@ -86,13 +86,15 @@ function categoryBalances() {
     if (!e.category_id) continue;
     spend[e.category_id] = (spend[e.category_id] || 0) + e.budget_amount;
   }
-  // Categories are one level deep. A parent's figures include its children's,
-  // so the top-line gauge answers "how much Food is left" regardless of which
-  // subcategory each meal was logged under.
+  // Categories are one level deep. A parent with subcategories IS the sum of
+  // them — it holds no allocation of its own, so there is one place each figure
+  // is set and the top line always equals what is underneath it.
   const kidsOf = (id) => b.categories.filter((c) => c.parent_id === id);
   const shape = (c, isSub) => {
     const kids = isSub ? [] : kidsOf(c.id);
-    const allocated = c.allocated + kids.reduce((n, k) => n + k.allocated, 0);
+    const allocated = kids.length
+      ? kids.reduce((n, k) => n + k.allocated, 0)
+      : c.allocated;
     const spent = (spend[c.id] || 0) + kids.reduce((n, k) => n + (spend[k.id] || 0), 0);
     return {
       ...c, allocated, spent, isSub,
@@ -120,10 +122,10 @@ function categoryOptions(selectedId) {
     const opt = (c, label) =>
       `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${label}</option>`;
     if (!kids.length) return opt(p, p.name);
-    // The parent stays selectable — not every meal belongs to a subcategory,
-    // and forcing a choice slows the common case down.
-    return `<optgroup label="${p.name}">${opt(p, `${p.name} (general)`)}${
-      kids.map((k) => opt(k, k.name)).join('')}</optgroup>`;
+    // A parent with subcategories holds no allocation of its own, so logging
+    // straight to it would always read as unbudgeted. Only the leaves are
+    // selectable.
+    return `<optgroup label="${p.name}">${kids.map((k) => opt(k, k.name)).join('')}</optgroup>`;
   }).join('');
 }
 
