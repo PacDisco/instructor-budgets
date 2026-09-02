@@ -103,6 +103,7 @@ async function getMe(request, email) {
   const shaped = budgets.map((b) => ({
     ...coerceMoney(b, MONEY_BUDGET),
     default_rate: Number(b.default_rate),
+    rates: b.rates || {},
     categories: cats.filter((c) => c.budget_id === b.id),
   }));
 

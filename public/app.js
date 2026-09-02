@@ -113,6 +113,28 @@ function categoryBalances() {
 }
 
 // Flat list for the spend form's dropdown, grouped by parent.
+// rates maps a currency code to budget-currency units per 1 unit of it, e.g. a
+// PEN budget: { NZD: 2.20, USD: 3.34 }. default_rate is the pre-map fallback.
+// Offer the budget currency first, then anything the admin set a rate for.
+function currencyChoices(b) {
+  const out = [b.currency];
+  for (const c of Object.keys((b && b.rates) || {})) if (!out.includes(c)) out.push(c);
+  for (const c of [b.base_currency || 'NZD', 'USD', 'EUR']) if (!out.includes(c)) out.push(c);
+  return out;
+}
+
+function planningRate(b, currency) {
+  if (!b || currency === b.currency) return 1;
+  const r = b.rates && b.rates[currency];
+  if (Number.isFinite(Number(r)) && Number(r) > 0) return Number(r);
+  // Only fall back when the legacy single rate was actually meant for this
+  // currency — otherwise leave it blank and make the instructor enter one.
+  if (currency === (b.base_currency || 'NZD') && Number(b.default_rate) > 0) {
+    return Number(b.default_rate);
+  }
+  return null;
+}
+
 function categoryOptions(selectedId) {
   const b = budget();
   if (!b) return '';
@@ -340,7 +362,7 @@ function openSpend(categoryId) {
         <div>
           <label for="cur">Currency</label>
           <select id="cur">
-            ${['PEN','USD','NZD','EUR'].map((c) => `<option ${c === b.currency ? 'selected' : ''}>${c}</option>`).join('')}
+            ${currencyChoices(b).map((c) => `<option ${c === b.currency ? 'selected' : ''}>${c}</option>`).join('')}
           </select>
         </div>
         <div>
@@ -400,9 +422,12 @@ function openSpend(categoryId) {
       rate.value = 1; rateHint.textContent = ''; wasForeign = false;
       saveLabel(0, false); return;
     }
-    // Entering a foreign currency: restore the planning rate. Without this the
-    // field keeps the 1 that the same-currency branch just wrote.
-    if (!wasForeign) rate.value = b.default_rate || '';
+    // Entering a foreign currency: fill in the planning rate for THAT currency.
+    // A single per-budget rate could only ever be right for one of them.
+    if (!wasForeign || rate.dataset.forCur !== cur.value) {
+      rate.value = planningRate(b, cur.value) || '';
+      rate.dataset.forCur = cur.value;
+    }
     wasForeign = true;
     const a = Number(amt.value) || 0;
     const conv = a * (Number(rate.value) || 0);
@@ -492,18 +517,18 @@ function openCash() {
         <label for="wamt">Amount received</label>
         <input class="amount-input num" id="wamt" type="number" inputmode="decimal" step="0.01" placeholder="0.00">
         <label for="wcur">Currency</label>
-        <select id="wcur">${['PEN','USD','NZD','EUR'].map((c) => `<option ${c === b.currency ? 'selected' : ''}>${c}</option>`).join('')}</select>
+        <select id="wcur">${currencyChoices(b).map((c) => `<option ${c === b.currency ? 'selected' : ''}>${c}</option>`).join('')}</select>
       </div>
       <div id="ex" hidden>
         <label for="xout">Gave</label>
         <div class="field-row">
           <div><input class="num" id="xout" type="number" inputmode="decimal" step="0.01" placeholder="0.00"></div>
-          <div><select id="xoutcur">${['USD','PEN','NZD','EUR'].map((c) => `<option>${c}</option>`).join('')}</select></div>
+          <div><select id="xoutcur">${currencyChoices(b).map((c) => `<option ${c === (b.base_currency || 'USD') ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
         </div>
         <label for="xin">Received</label>
         <div class="field-row">
           <div><input class="num" id="xin" type="number" inputmode="decimal" step="0.01" placeholder="0.00"></div>
-          <div><select id="xincur">${['PEN','USD','NZD','EUR'].map((c) => `<option ${c === b.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
+          <div><select id="xincur">${currencyChoices(b).map((c) => `<option ${c === b.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
         </div>
         <p class="hint" id="xhint"></p>
       </div>
