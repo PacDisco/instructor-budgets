@@ -339,14 +339,51 @@ function toast(msg) {
 const today = () => new Date().toISOString().slice(0, 10);
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
-/* Shrink before queueing: a 4MB phone photo will never clear a 3G uplink in Cuyabeno. */
-async function compress(file, max = 1200, quality = 0.72) {
-  const bmp = await createImageBitmap(file);
+/* Shrink before queueing: a 4MB phone photo will never clear a 3G uplink in
+   Cuyabeno. But a receipt is a document, not a snapshot — the whole point is
+   being able to read the total and the date months later, so this is tuned for
+   text legibility rather than the smallest possible file.
+
+   1600px puts a receipt filling half the frame at roughly 23px line height,
+   which is comfortably readable and viable for OCR. 1200px gave 17px: fine at a
+   glance, poor for small print. The cost is roughly 250-350KB instead of
+   120-180KB, which is a second or two on a bad connection and worth it for a
+   record finance has to reconcile against a bank statement. */
+const RECEIPT_MAX_PX = 1600;
+const RECEIPT_QUALITY = 0.85;
+
+async function compress(file, max = RECEIPT_MAX_PX, quality = RECEIPT_QUALITY) {
+  // `imageOrientation: 'from-image'` is required. Without it createImageBitmap
+  // ignores the EXIF orientation tag that phones set on portrait photos, and
+  // canvas strips EXIF on the way out — so the receipt uploads sideways with no
+  // metadata left for anything downstream to correct it.
+  let bmp;
+  try {
+    bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch {
+    bmp = await createImageBitmap(file);
+  }
+
+  // Already small and modest resolution: keep the original bytes rather than
+  // re-encoding, which would only lose detail.
+  if (file.size < 350_000 && Math.max(bmp.width, bmp.height) <= max) {
+    bmp.close?.();
+    return file;
+  }
+
   const scale = Math.min(1, max / Math.max(bmp.width, bmp.height));
   const c = document.createElement('canvas');
-  c.width = Math.round(bmp.width * scale); c.height = Math.round(bmp.height * scale);
-  c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
-  return new Promise((r) => c.toBlob(r, 'image/jpeg', quality));
+  c.width = Math.round(bmp.width * scale);
+  c.height = Math.round(bmp.height * scale);
+  const ctx = c.getContext('2d');
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(bmp, 0, 0, c.width, c.height);
+  bmp.close?.();
+
+  return new Promise((resolve) => {
+    c.toBlob((blob) => resolve(blob && blob.size < file.size ? blob : file),
+             'image/jpeg', quality);
+  });
 }
 
 function openSpend(categoryId) {
