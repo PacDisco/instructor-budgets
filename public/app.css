@@ -247,3 +247,10 @@ input[type="number"] { font-family: "IBM Plex Mono", ui-monospace, monospace; fo
   content: ''; flex: 1; height: 1px; background: var(--rule);
 }
 body.signed-out .bar, body.signed-out .dock, body.signed-out main { display: none; }
+
+/* Subcategories sit under their parent. The parent gauge already includes
+   them, so the child bar is a lighter shade to read as a breakdown rather
+   than a separate budget. */
+.gauge.sub { margin-left: 20px; }
+.gauge.sub .gauge-name { font-weight: 400; color: var(--muted); }
+.gauge.sub .gauge-fill { background: #4b9b87; }

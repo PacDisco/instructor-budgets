@@ -86,15 +86,45 @@ function categoryBalances() {
     if (!e.category_id) continue;
     spend[e.category_id] = (spend[e.category_id] || 0) + e.budget_amount;
   }
-  return b.categories.map((c) => {
-    const spent = spend[c.id] || 0;
+  // Categories are one level deep. A parent's figures include its children's,
+  // so the top-line gauge answers "how much Food is left" regardless of which
+  // subcategory each meal was logged under.
+  const kidsOf = (id) => b.categories.filter((c) => c.parent_id === id);
+  const shape = (c, isSub) => {
+    const kids = isSub ? [] : kidsOf(c.id);
+    const allocated = c.allocated + kids.reduce((n, k) => n + k.allocated, 0);
+    const spent = (spend[c.id] || 0) + kids.reduce((n, k) => n + (spend[k.id] || 0), 0);
     return {
-      ...c, spent,
-      remaining: c.allocated - spent,
-      pct: c.allocated > 0 ? Math.min(100, (spent / c.allocated) * 100) : (spent > 0 ? 100 : 0),
-      over: spent > c.allocated,
+      ...c, allocated, spent, isSub,
+      remaining: allocated - spent,
+      pct: allocated > 0 ? Math.min(100, (spent / allocated) * 100) : (spent > 0 ? 100 : 0),
+      over: spent > allocated,
     };
-  });
+  };
+
+  const out = [];
+  for (const p of b.categories.filter((c) => !c.parent_id)) {
+    out.push(shape(p, false));
+    for (const k of kidsOf(p.id)) out.push(shape(k, true));
+  }
+  return out;
+}
+
+// Flat list for the spend form's dropdown, grouped by parent.
+function categoryOptions(selectedId) {
+  const b = budget();
+  if (!b) return '';
+  const parents = b.categories.filter((c) => !c.parent_id);
+  return parents.map((p) => {
+    const kids = b.categories.filter((c) => c.parent_id === p.id);
+    const opt = (c, label) =>
+      `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${label}</option>`;
+    if (!kids.length) return opt(p, p.name);
+    // The parent stays selectable — not every meal belongs to a subcategory,
+    // and forcing a choice slows the common case down.
+    return `<optgroup label="${p.name}">${opt(p, `${p.name} (general)`)}${
+      kids.map((k) => opt(k, k.name)).join('')}</optgroup>`;
+  }).join('');
 }
 
 function cashFloat() {
@@ -230,13 +260,14 @@ function render() {
   }
 
   const cats = categoryBalances();
-  const totalLeft = cats.reduce((n, c) => n + c.remaining, 0);
+  // Parents already include their children, so sum top level only.
+  const totalLeft = cats.filter((c) => !c.isSub).reduce((n, c) => n + c.remaining, 0);
   view.append(el(`<div class="section-head"><h2>Remaining</h2><span class="num">${fmt(totalLeft, b.currency)} left</span></div>`));
 
   const list = el('<div class="gauge-list"></div>');
   for (const c of cats) {
     const g = el(`
-      <button class="gauge ${c.over ? 'over' : ''}" type="button">
+      <button class="gauge ${c.isSub ? 'sub' : ''} ${c.over ? 'over' : ''}" type="button">
         <span class="gauge-top">
           <span class="gauge-name">${c.name}</span>
           <span class="gauge-left num">${fmt(c.remaining, b.currency)}</span>
@@ -312,7 +343,7 @@ function openSpend(categoryId) {
         </div>
         <div>
           <label for="cat">Category</label>
-          <select id="cat">${cats.map((c) => `<option value="${c.id}" ${c.id === categoryId ? 'selected' : ''}>${c.name}</option>`).join('')}</select>
+          <select id="cat">${categoryOptions(categoryId)}</select>
         </div>
       </div>
       <div id="rateWrap" hidden>

@@ -22,9 +22,35 @@ create table if not exists categories (
   budget_id  text not null references budgets(id) on delete cascade,
   name       text not null,
   allocated  bigint not null default 0,                -- minor units of budget currency
-  sort_order integer not null default 0
+  sort_order integer not null default 0,
+  -- One level only, enforced by the trigger below. Allocation sits on any node;
+  -- a parent's displayed total is its own plus its children's.
+  parent_id  text references categories(id) on delete cascade
 );
 create index if not exists categories_budget_idx on categories(budget_id);
+create index if not exists categories_parent_idx on categories(parent_id);
+
+create or replace function categories_one_level() returns trigger as $$
+begin
+  if new.parent_id is not null then
+    if new.parent_id = new.id then
+      raise exception 'A category cannot be its own parent';
+    end if;
+    if exists (select 1 from categories where id = new.parent_id and parent_id is not null) then
+      raise exception 'Subcategories cannot be nested more than one level deep';
+    end if;
+    if exists (select 1 from categories where parent_id = new.id) then
+      raise exception 'This category has subcategories, so it cannot become one';
+    end if;
+  end if;
+  return new;
+end;
+$$ language plpgsql;
+
+drop trigger if exists categories_one_level_trg on categories;
+create trigger categories_one_level_trg
+  before insert or update on categories
+  for each row execute function categories_one_level();
 
 create table if not exists assignments (
   budget_id text not null references budgets(id) on delete cascade,
