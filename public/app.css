@@ -22,13 +22,21 @@
 
 html, body {
   margin: 0;
-  max-width: 100%;
-  overflow-x: hidden;
   background: var(--paper);
   color: var(--ink);
   font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   line-height: 1.45;
   overscroll-behavior-y: none;
+}
+
+/* overflow-x on `html` makes it a scroll container and, on iOS Safari and
+   Android WebView, breaks vertical scrolling outright. `clip` on body alone
+   contains a stray wide child without creating a scroll container or forcing
+   overflow-y to auto. The real overflow fixes are min-width:0 on the flex rows
+   and the explicit sizing on date inputs, further down. */
+body { overflow-x: clip; }
+@supports not (overflow: clip) {
+  body { overflow-x: hidden; }
 }
 
 .num {
@@ -146,6 +154,7 @@ main { padding: var(--pad) var(--pad) 108px; max-width: 560px; margin: 0 auto; }
 .sheet {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
   max-height: 92vh; overflow-y: auto; overflow-x: hidden;
+  -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
   background: var(--paper);
   border-radius: 18px 18px 0 0;
   padding: 8px var(--pad) calc(env(safe-area-inset-bottom) + 20px);
