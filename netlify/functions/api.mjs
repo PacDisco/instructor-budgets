@@ -86,7 +86,16 @@ async function getMe(request, email) {
 
   const [budgets, categories, entries] = await Promise.all([
     sql`select * from budgets where id = any(${ids}) and status = 'active'`,
-    sql`select * from categories where budget_id = any(${ids}) order by sort_order`,
+    // Parent's position first, then parent-before-children, then the child's
+    // own position — so the field app lists categories in the same order the
+    // admin arranged them.
+    sql`select c.* from categories c
+          left join categories p on p.id = c.parent_id
+         where c.budget_id = any(${ids})
+         order by coalesce(p.sort_order, c.sort_order),
+                  (c.parent_id is not null),
+                  c.sort_order,
+                  c.id`,
     sql`select * from entries where budget_id = any(${ids}) order by received_at`,
   ]);
 
