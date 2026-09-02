@@ -1,20 +1,53 @@
 /* Field Budget — instructor app
-   Read in bright Andean sun and in a dim hostel at 9pm. High contrast, big
-   targets, tabular numerals so columns of money line up and can be scanned. */
+   Pacific Discovery brand: Poppins and DM Serif Display, topaz #55bbd2 and
+   green #81c243, pill buttons, body grey #4a4a4a.
+
+   Fonts are self-hosted rather than pulled from a CDN: this app has to open in
+   Cuyabeno with no signal, and a webfont that fails to load is a layout that
+   shifts under an instructor mid-entry. */
+
+@font-face {
+  font-family: 'Poppins';
+  src: url('/fonts/Poppins-Regular.woff2') format('woff2');
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'Poppins';
+  src: url('/fonts/Poppins-Medium.woff2') format('woff2');
+  font-weight: 500; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'Poppins';
+  src: url('/fonts/Poppins-SemiBold.woff2') format('woff2');
+  font-weight: 600; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'DM Serif Display';
+  src: url('/fonts/DMSerifDisplay-Regular.woff2') format('woff2');
+  font-weight: 400; font-style: normal; font-display: swap;
+}
 
 :root {
-  --paper: #F2F3EF;
-  --card: #FFFFFF;
-  --ink: #1A231D;
-  --muted: #67766C;
-  --rule: #D8DDD5;
-  --gauge: #C3CBBF;
-  --deep: #14584A;
-  --deep-soft: #E4EDE8;
-  --over: #9C3B27;
-  --over-soft: #F6E5E0;
+  --paper: #f7f7f7;
+  --card: #ffffff;
+  --ink: #4a4a4a;          /* brand body grey, 8.9:1 on white */
+  --ink-strong: #2f3133;
+  --muted: #797979;
+  --rule: #dee2e6;
+  --gauge: #e4e7ea;
+
+  --topaz: #55bbd2;        /* brand primary — identity, fills, accents */
+  --topaz-dark: #288195;   /* derived along the same hue to reach 4.5:1 with
+                              white text; brand topaz itself is only 2.2:1 */
+  --topaz-darker: #1e6a7a;
+  --topaz-soft: #eaf7fa;
+  --green: #81c243;        /* brand secondary */
+  --over: #b02a37;
+  --over-soft: #fbeaec;
+
   --pad: 16px;
   --radius: 10px;
+  --pill: 70px;            /* brand button radius */
   font-size: 17px;
 }
 
@@ -24,45 +57,57 @@ html, body {
   margin: 0;
   background: var(--paper);
   color: var(--ink);
-  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  line-height: 1.45;
+  font-family: 'Poppins', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-weight: 400;
+  line-height: 1.55;
   overscroll-behavior-y: none;
 }
 
 /* overflow-x on `html` makes it a scroll container and, on iOS Safari and
    Android WebView, breaks vertical scrolling outright. `clip` on body alone
    contains a stray wide child without creating a scroll container or forcing
-   overflow-y to auto. The real overflow fixes are min-width:0 on the flex rows
-   and the explicit sizing on date inputs, further down. */
+   overflow-y to auto. */
 body { overflow-x: clip; }
 @supports not (overflow: clip) {
   body { overflow-x: hidden; }
 }
 
-.num {
-  font-family: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, monospace;
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
+h1, h2 {
+  font-family: 'DM Serif Display', Times, serif;
+  font-weight: 400;
+  color: var(--ink);
 }
+
+/* Poppins has no tabular figures — its "1" is half the width of its "0" — so
+   money is right-aligned to keep the decimal flush rather than relying on a
+   font feature that isn't there. */
+.num { font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
 
 /* ---- top bar ---- */
 .bar {
   position: sticky; top: 0; z-index: 20;
   display: flex; align-items: center; gap: 12px;
   padding: calc(env(safe-area-inset-top) + 10px) var(--pad) 10px;
-  background: var(--paper);
+  background: var(--card);
   border-bottom: 1px solid var(--rule);
 }
+.bar-logo { flex: none; height: 22px; width: auto; display: block; }
 .bar-id { flex: 1; min-width: 0; }
-.bar-name { display: block; font-weight: 600; font-size: 1rem; }
-.bar-sub { display: block; font-size: 0.78rem; color: var(--muted); }
+.bar-name {
+  display: block; font-family: 'DM Serif Display', Times, serif;
+  font-size: 1.06rem; line-height: 1.25; color: var(--ink);
+}
+.bar-sub { display: block; font-size: 0.75rem; color: var(--muted); }
 
 .chip {
   flex: none; border: 1px solid var(--rule); background: var(--card);
-  color: var(--muted); border-radius: 999px;
-  padding: 7px 13px; font: inherit; font-size: 0.78rem; cursor: pointer;
+  color: var(--muted); border-radius: var(--pill);
+  padding: 6px 14px; font: inherit; font-size: 0.75rem; font-weight: 500; cursor: pointer;
 }
-.chip[data-state="pending"] { border-color: var(--deep); color: var(--deep); background: var(--deep-soft); font-weight: 600; }
+.chip[data-state="pending"] {
+  border-color: var(--topaz-dark); color: var(--topaz-dark);
+  background: var(--topaz-soft); font-weight: 600;
+}
 .chip[data-state="offline"] { border-color: var(--over); color: var(--over); background: var(--over-soft); }
 
 /* ---- main ---- */
@@ -71,15 +116,18 @@ main { padding: var(--pad) var(--pad) 108px; max-width: 560px; margin: 0 auto; }
 
 .section-head {
   display: flex; justify-content: space-between; align-items: baseline;
-  margin: 22px 2px 10px;
+  margin: 24px 2px 10px;
 }
 .section-head:first-child { margin-top: 4px; }
-.section-head h2 { margin: 0; font-size: 0.86rem; font-weight: 600; color: var(--muted); }
+.section-head h2 {
+  margin: 0; font-family: 'Poppins', sans-serif; font-size: 0.72rem;
+  font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em;
+}
 .section-head span { font-size: 0.78rem; color: var(--muted); }
 
-/* ---- category gauges: the signature element ----
-   Each row is a fuel gauge. The bar is the row's own bottom edge, so the
-   remaining balance reads without any legend. */
+/* ---- category gauges ----
+   Each row is a fuel gauge; the bar is the row's own bottom edge, so the
+   remaining balance reads without a legend. */
 .gauge-list { display: flex; flex-direction: column; gap: 8px; }
 
 .gauge {
@@ -89,21 +137,29 @@ main { padding: var(--pad) var(--pad) 108px; max-width: 560px; margin: 0 auto; }
   font: inherit; color: inherit; cursor: pointer;
   overflow: hidden;
 }
-.gauge:active { background: #FAFBF9; }
-.gauge:focus-visible { outline: 2px solid var(--deep); outline-offset: 2px; }
+.gauge:active { background: #fbfdfe; }
+.gauge:focus-visible { outline: 2px solid var(--topaz-dark); outline-offset: 2px; }
 
 .gauge-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
-.gauge-name { font-weight: 500; }
-.gauge-left { font-size: 1.02rem; font-weight: 600; }
-.gauge-meta { margin-top: 2px; font-size: 0.76rem; color: var(--muted); }
+.gauge-name { font-weight: 500; color: var(--ink-strong); }
+.gauge-left { font-size: 1rem; font-weight: 600; text-align: right; }
+.gauge-meta { margin-top: 2px; font-size: 0.74rem; color: var(--muted); }
 
 .gauge-track {
   position: absolute; left: 0; right: 0; bottom: 0; height: 5px;
   background: var(--gauge);
 }
-.gauge-fill { height: 100%; background: var(--deep); transition: width .3s ease; }
+.gauge-fill { height: 100%; background: var(--topaz); transition: width .3s ease; }
 .gauge.over .gauge-left { color: var(--over); }
 .gauge.over .gauge-fill { background: var(--over); }
+
+/* Subcategories sit visibly inside their parent's group. */
+.gauge.sub {
+  margin-left: 14px; border-left: 3px solid var(--topaz-soft);
+  padding-top: 11px; padding-bottom: 14px;
+}
+.gauge.sub .gauge-name { font-weight: 400; }
+.gauge.sub .gauge-left { font-size: 0.92rem; }
 
 /* ---- cash float ---- */
 .float-row {
@@ -111,14 +167,14 @@ main { padding: var(--pad) var(--pad) 108px; max-width: 560px; margin: 0 auto; }
   background: var(--card); border: 1px solid var(--rule);
   border-radius: var(--radius); padding: 12px 14px; margin-bottom: 8px;
 }
-.float-cur { font-weight: 500; }
-.float-amt { font-weight: 600; }
+.float-cur { font-weight: 500; color: var(--ink-strong); }
+.float-amt { font-weight: 600; text-align: right; }
 .float-amt.negative { color: var(--over); }
 
 .empty {
   background: var(--card); border: 1px dashed var(--rule);
   border-radius: var(--radius); padding: 22px 18px; color: var(--muted);
-  font-size: 0.9rem;
+  font-size: 0.88rem;
 }
 
 /* ---- history ---- */
@@ -129,9 +185,12 @@ main { padding: var(--pad) var(--pad) 108px; max-width: 560px; margin: 0 auto; }
 .entry:last-child { border-bottom: 0; }
 .entry-main { flex: 1; min-width: 0; }
 .entry-desc { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.entry-meta { font-size: 0.76rem; color: var(--muted); }
-.entry-amt { font-weight: 600; white-space: nowrap; }
-.dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--deep); margin-right: 5px; vertical-align: middle; }
+.entry-meta { font-size: 0.74rem; color: var(--muted); }
+.entry-amt { font-weight: 600; white-space: nowrap; text-align: right; }
+.dot {
+  display: inline-block; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--green); margin-right: 5px; vertical-align: middle;
+}
 .dot.pending { background: var(--over); }
 
 /* ---- dock ---- */
@@ -139,18 +198,22 @@ main { padding: var(--pad) var(--pad) 108px; max-width: 560px; margin: 0 auto; }
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
   display: flex; gap: 8px;
   padding: 10px var(--pad) calc(env(safe-area-inset-bottom) + 10px);
-  background: var(--paper); border-top: 1px solid var(--rule);
+  background: var(--card); border-top: 1px solid var(--rule);
 }
 .dock-btn {
-  flex: 1; min-height: 52px; border-radius: var(--radius);
-  border: 1px solid var(--rule); background: var(--card);
+  flex: 1; min-height: 52px; border-radius: var(--pill);
+  border: 2px solid var(--rule); background: var(--card);
   font: inherit; font-weight: 500; color: var(--ink); cursor: pointer;
 }
-.dock-btn.primary { flex: 2; background: var(--deep); border-color: var(--deep); color: #fff; font-weight: 600; }
+.dock-btn.primary {
+  flex: 2; background: var(--topaz-dark); border-color: var(--topaz-dark);
+  color: #fff; font-weight: 600;
+}
+.dock-btn.primary:active { background: var(--topaz-darker); border-color: var(--topaz-darker); }
 .dock-btn:active { transform: translateY(1px); }
 
 /* ---- sheet ---- */
-.scrim { position: fixed; inset: 0; background: rgba(26,35,29,.42); z-index: 30; }
+.scrim { position: fixed; inset: 0; background: rgba(74,74,74,.45); z-index: 30; }
 .sheet {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 40;
   max-height: 92vh; overflow-y: auto; overflow-x: hidden;
@@ -164,15 +227,22 @@ main { padding: var(--pad) var(--pad) 108px; max-width: 560px; margin: 0 auto; }
   @keyframes rise { from { transform: translateY(18px); opacity: .6; } }
 }
 .sheet-grip { width: 38px; height: 4px; border-radius: 2px; background: var(--rule); margin: 6px auto 14px; }
-.sheet h2 { margin: 0 0 14px; font-size: 1.1rem; }
+.sheet h2 { margin: 0 0 14px; font-size: 1.32rem; }
 
 /* ---- forms ---- */
-label { display: block; margin: 14px 0 6px; font-size: 0.82rem; font-weight: 500; color: var(--muted); }
+label {
+  display: block; margin: 14px 0 6px;
+  font-size: 0.76rem; font-weight: 500; color: var(--muted);
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
 input, select, textarea {
   width: 100%; max-width: 100%; min-width: 0;
   font: inherit; color: var(--ink);
   background: var(--card); border: 1px solid var(--rule);
   border-radius: var(--radius); padding: 13px 12px; min-height: 50px;
+}
+input:focus, select:focus, textarea:focus {
+  outline: 2px solid var(--topaz-dark); outline-offset: -1px; border-color: var(--topaz-dark);
 }
 
 /* Date inputs carry an intrinsic width from their shadow DOM that width:100%
@@ -184,10 +254,11 @@ input[type="date"] {
 }
 input[type="date"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
 input[type="date"]::-webkit-calendar-picker-indicator { margin-left: 4px; }
-input:focus, select:focus, textarea:focus { outline: 2px solid var(--deep); outline-offset: -1px; border-color: var(--deep); }
-input[type="number"] { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
 
-.amount-input { font-size: 1.7rem; font-weight: 600; text-align: right; padding: 14px 12px; min-height: 62px; }
+.amount-input {
+  font-size: 1.7rem; font-weight: 600; text-align: right;
+  padding: 14px 12px; min-height: 62px;
+}
 
 .field-row { display: flex; gap: 10px; }
 /* min-width:0 is required — flex items default to min-width:auto and will not
@@ -196,11 +267,14 @@ input[type="number"] { font-family: "IBM Plex Mono", ui-monospace, monospace; fo
 
 .seg { display: flex; gap: 8px; }
 .seg button {
-  flex: 1; min-height: 50px; border-radius: var(--radius);
-  border: 1px solid var(--rule); background: var(--card);
+  flex: 1; min-height: 50px; border-radius: var(--pill);
+  border: 2px solid var(--rule); background: var(--card);
   font: inherit; color: var(--ink); cursor: pointer;
 }
-.seg button[aria-pressed="true"] { background: var(--deep); border-color: var(--deep); color: #fff; font-weight: 600; }
+.seg button[aria-pressed="true"] {
+  background: var(--topaz-dark); border-color: var(--topaz-dark);
+  color: #fff; font-weight: 600;
+}
 
 .receipt {
   display: flex; align-items: center; gap: 12px;
@@ -208,22 +282,26 @@ input[type="number"] { font-family: "IBM Plex Mono", ui-monospace, monospace; fo
   border-radius: var(--radius); padding: 12px; margin-top: 6px;
 }
 .receipt img { width: 54px; height: 54px; object-fit: cover; border-radius: 6px; }
-.receipt-btn { flex: 1; min-height: 44px; border: 0; background: none; font: inherit; text-align: left; color: var(--deep); font-weight: 500; cursor: pointer; }
+.receipt-btn {
+  flex: 1; min-height: 44px; border: 0; background: none; font: inherit;
+  text-align: left; color: var(--topaz-dark); font-weight: 500; cursor: pointer;
+}
 
-.hint { font-size: 0.78rem; color: var(--muted); margin-top: 6px; }
-.hint strong { font-weight: 600; color: var(--ink); }
-.error { font-size: 0.82rem; color: var(--over); margin-top: 6px; }
+.hint { font-size: 0.76rem; color: var(--muted); margin-top: 6px; }
+.hint strong { font-weight: 600; color: var(--ink-strong); }
+.error { font-size: 0.8rem; color: var(--over); margin-top: 6px; }
 
 .submit {
   width: 100%; min-height: 56px; margin-top: 22px;
-  border: 0; border-radius: var(--radius);
-  background: var(--deep); color: #fff; font: inherit; font-weight: 600; font-size: 1.02rem;
+  border: 2px solid var(--topaz-dark); border-radius: var(--pill);
+  background: var(--topaz-dark); color: #fff;
+  font: inherit; font-weight: 600; font-size: 1rem;
   cursor: pointer;
 }
-.submit:active { transform: translateY(1px); }
+.submit:active { background: var(--topaz-darker); border-color: var(--topaz-darker); transform: translateY(1px); }
 .ghost {
   width: 100%; min-height: 48px; margin-top: 8px;
-  border: 1px solid var(--rule); border-radius: var(--radius);
+  border: 2px solid var(--rule); border-radius: var(--pill);
   background: none; color: var(--muted); font: inherit; cursor: pointer;
 }
 
@@ -231,35 +309,28 @@ input[type="number"] { font-family: "IBM Plex Mono", ui-monospace, monospace; fo
 .toast {
   position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%);
   z-index: 50; max-width: 88vw;
-  background: var(--ink); color: var(--paper);
-  border-radius: 999px; padding: 11px 20px; font-size: 0.88rem;
+  background: var(--ink); color: #fff;
+  border-radius: var(--pill); padding: 11px 20px; font-size: 0.86rem;
 }
 
-/* ---- sign-in ----
-   Shown when /api/me says signed_out. Cloudflare Access used to cover this
-   invisibly; on Netlify it is a screen the instructor actually sees. */
+/* ---- sign-in ---- */
 .signin {
   max-width: 400px; margin: 0 auto;
-  padding: calc(env(safe-area-inset-top) + 48px) var(--pad) 40px;
+  padding: calc(env(safe-area-inset-top) + 44px) var(--pad) 40px;
+  text-align: center;
 }
-.signin h1 { margin: 0 0 6px; font-size: 1.4rem; }
-.signin-lede { margin: 0 0 26px; color: var(--muted); font-size: 0.92rem; }
+.signin-logo { width: 190px; height: auto; margin: 0 auto 26px; display: block; }
+.signin h1 { margin: 0 0 6px; font-size: 1.7rem; }
+.signin-lede { margin: 0 0 26px; color: var(--muted); font-size: 0.88rem; }
+.signin label, .signin input { text-align: left; }
 .gbtn { min-height: 44px; display: flex; justify-content: center; }
-/* A class selector beats the UA [hidden] rule, so display:flex would keep an
-   empty button box taking up space. These put it back. */
 .gbtn[hidden], .signin-or[hidden] { display: none; }
 .signin-or {
   display: flex; align-items: center; gap: 12px;
-  margin: 24px 0 4px; color: var(--muted); font-size: 0.8rem;
+  margin: 24px 0 4px; color: var(--muted); font-size: 0.74rem;
+  text-transform: uppercase; letter-spacing: 0.06em;
 }
 .signin-or::before, .signin-or::after {
   content: ''; flex: 1; height: 1px; background: var(--rule);
 }
 body.signed-out .bar, body.signed-out .dock, body.signed-out main { display: none; }
-
-/* Subcategories sit under their parent. The parent gauge already includes
-   them, so the child bar is a lighter shade to read as a breakdown rather
-   than a separate budget. */
-.gauge.sub { margin-left: 20px; }
-.gauge.sub .gauge-name { font-weight: 400; color: var(--muted); }
-.gauge.sub .gauge-fill { background: #4b9b87; }

@@ -3,14 +3,19 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta name="theme-color" content="#F2F3EF">
+<meta name="theme-color" content="#ffffff">
 <title>Field Budget</title>
 <link rel="manifest" href="/manifest.webmanifest">
+<link rel="preload" href="/fonts/Poppins-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="/fonts/DMSerifDisplay-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
 
 <header class="bar">
+  <img class="bar-logo" src="/logo.png" alt="Pacific Discovery" width="314" height="84">
   <div class="bar-id">
     <span class="bar-name" id="budgetName">Loading</span>
     <span class="bar-sub" id="budgetSub"></span>
@@ -21,6 +26,7 @@
 <main id="view"></main>
 
 <section class="signin" id="signin" hidden>
+  <img class="signin-logo" src="/logo.png" alt="Pacific Discovery" width="314" height="84">
   <h1>Field Budget</h1>
   <p class="signin-lede">Sign in with the address your programme director assigned to the budget.</p>
   <div id="gbtn" class="gbtn"></div>
