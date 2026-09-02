@@ -1,7 +1,9 @@
 // Response helpers, CORS, and cookies.
-// The admin page lives on the dashboard site, so the API is called from two
-// origins. Both must be subdomains of the same registrable domain or the
-// browser treats the session cookie as third-party and drops it.
+//
+// The API is same-origin with the app: the admin side lives in the dashboard
+// repo and reads this database directly, so nothing calls in cross-origin.
+// ALLOWED_ORIGINS and COOKIE_DOMAIN are therefore optional — leave them unset
+// unless you add another front end later.
 
 const allowed = () =>
   (process.env.ALLOWED_ORIGINS || '')
@@ -47,7 +49,7 @@ export function sessionCookie(value, maxAgeSeconds) {
     'Path=/',
     'HttpOnly',
     'Secure',
-    'SameSite=Lax',           // Lax is enough: both origins are same-site subdomains
+    'SameSite=Lax',
     `Max-Age=${maxAgeSeconds}`,
   ];
   if (domain) bits.push(`Domain=${domain}`);

@@ -28,23 +28,25 @@ for receipts, Google Sign-In and emailed magic links for auth.
 │   ├── index.html  app.css  app.js  sw.js
 │   ├── manifest.webmanifest  icon-192.png  icon-512.png
 │   └── .well-known/assetlinks.json
-└── admin/budgets.html            copy into the dashboard site
 ```
 
-## Two sites, one API
+The admin side is **not here** — it lives in the dashboard repo as
+`field-budget/` plus `netlify/functions/budget-admin.mjs`, and reads this same
+database directly. See `FIELD-BUDGET.md` there.
 
-The instructor app and the API deploy together as one Netlify site. The admin
-page is a single file you drop into the existing dashboard site, and it calls the
-API cross-origin with `credentials: 'include'`.
+## Where the admin side lives
 
-**Both sites must be subdomains of `pacificdiscovery.org`.** The session cookie is
-scoped to `.pacificdiscovery.org`, which is what lets the dashboard use a session
-created on the budget app. On a `*.netlify.app` hostname the browser treats the
-two as unrelated sites and drops the cookie, and the admin page will silently
-401.
+In the dashboard repo, not here. It's a normal dashboard folder gated by Netlify
+Identity, and its function queries this database directly.
 
-Suggested: `budget.pacificdiscovery.org` for the app, dashboard where it already
-lives.
+That means there is **no cross-origin anything** between the two: no CORS, no
+shared session cookie, no requirement that they sit on the same domain. The only
+thing they share is the Neon connection string — the dashboard's
+`FIELD_BUDGET_DATABASE_URL` must point at the same database as `DATABASE_URL`
+here.
+
+A custom domain for this site is still worth having for the APK, but it is no
+longer required.
 
 ## Setup
 
@@ -90,10 +92,14 @@ Point a site at this repo — publish `public`, functions `netlify/functions`, n
 build command. Set every variable from `.env.example` under Site configuration →
 Environment variables. Add the custom domain.
 
-### 5. Admin page
+### 5. Admin side
 
-Copy `admin/budgets.html` into the dashboard site. If your app hostname differs
-from `budget.pacificdiscovery.org`, update the `API` constant at the top.
+Set `FIELD_BUDGET_DATABASE_URL` on the dashboard site to the same connection
+string as `DATABASE_URL` here. Don't run the dashboard's
+`MIGRATION-field-budget.sql` — step 1 already created these tables.
+
+Anyone who needs to open receipt links from the dashboard must be a member of the
+Shared Drive, or the link will 403.
 
 ### 6. Android via AirDroid
 
@@ -163,9 +169,9 @@ stays private and a file someone drags to another folder still resolves by ID.
 | `RESEND_API_KEY` | magic-link delivery |
 | `MAIL_FROM` | verified sender |
 | `APP_ORIGIN` | builds magic-link URLs |
-| `COOKIE_DOMAIN` | `.pacificdiscovery.org` |
-| `ALLOWED_ORIGINS` | app + dashboard origins, comma separated |
-| `ADMIN_EMAILS` | gates `/api/admin/*` |
+| `COOKIE_DOMAIN` | optional; only for another cross-origin front end |
+| `ALLOWED_ORIGINS` | optional; same |
+| `ADMIN_EMAILS` | lets an admin sign in without a budget assignment |
 
 ## Deploying changes
 

@@ -637,6 +637,14 @@ function wireMagicLink() {
   });
 }
 
+// When Google is unavailable, take the divider with it — otherwise the screen
+// reads as a broken button rather than an email-only sign-in.
+function hideGoogle(reason) {
+  document.getElementById('gbtn').hidden = true;
+  document.querySelector('.signin-or').hidden = true;
+  if (reason) console.warn(`Google sign-in unavailable (${reason})`);
+}
+
 async function loadGoogle() {
   const target = document.getElementById('gbtn');
   let clientId = null;
@@ -644,7 +652,7 @@ async function loadGoogle() {
     const res = await fetch(`${API}/auth/config`, { credentials: 'include' });
     ({ google_client_id: clientId } = await res.json());
   } catch { /* offline: the magic-link path is still visible */ }
-  if (!clientId) { target.hidden = true; return; }
+  if (!clientId) { hideGoogle('config'); return; }
 
   await new Promise((resolve, reject) => {
     if (window.google?.accounts?.id) return resolve();
@@ -652,9 +660,9 @@ async function loadGoogle() {
     sc.src = 'https://accounts.google.com/gsi/client';
     sc.async = true; sc.onload = resolve; sc.onerror = reject;
     document.head.append(sc);
-  }).catch(() => { target.hidden = true; });
+  }).catch(() => { hideGoogle('script'); });
 
-  if (!window.google?.accounts?.id) return;
+  if (!window.google?.accounts?.id) { hideGoogle('script'); return; }
   window.google.accounts.id.initialize({
     client_id: clientId,
     callback: async ({ credential }) => {
@@ -667,9 +675,17 @@ async function loadGoogle() {
       });
       if (res.ok) { hideSignIn(); await boot(); return; }
       const err = await res.json().catch(() => ({}));
-      msg.textContent = err.error === 'not_assigned'
-        ? `No budgets are assigned to ${err.email}. Ask your programme director to add that address.`
-        : 'That sign-in did not work. Try the email link instead.';
+      if (err.error === 'not_assigned') {
+        msg.textContent = `No budgets are assigned to ${err.email}. Ask your programme director to add that address.`;
+      } else if (res.status >= 500) {
+        // A 500 here is a configuration problem, not the instructor's fault.
+        // Showing the real message beats a shrug that sends them to a path that
+        // is probably broken for the same reason.
+        msg.textContent = `Sign-in is misconfigured: ${err.error || res.status}`;
+      } else {
+        msg.textContent = 'That sign-in did not work. Try the email link instead.';
+      }
+      console.error('google sign-in failed', res.status, err);
     },
   });
   window.google.accounts.id.renderButton(target, {

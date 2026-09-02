@@ -236,6 +236,9 @@ input[type="number"] { font-family: "IBM Plex Mono", ui-monospace, monospace; fo
 .signin h1 { margin: 0 0 6px; font-size: 1.4rem; }
 .signin-lede { margin: 0 0 26px; color: var(--muted); font-size: 0.92rem; }
 .gbtn { min-height: 44px; display: flex; justify-content: center; }
+/* A class selector beats the UA [hidden] rule, so display:flex would keep an
+   empty button box taking up space. These put it back. */
+.gbtn[hidden], .signin-or[hidden] { display: none; }
 .signin-or {
   display: flex; align-items: center; gap: 12px;
   margin: 24px 0 4px; color: var(--muted); font-size: 0.8rem;

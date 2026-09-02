@@ -197,84 +197,6 @@ async function getReceipt(request, email, fileId) {
   });
 }
 
-/* ---------------- admin routes ---------------- */
-
-async function adminRouter(request, email, path) {
-  if (!adminEmails().includes(email)) return json({ error: 'Not an admin' }, 403, request);
-  const sql = db();
-  const method = request.method;
-
-  if (path === '/api/admin/budgets' && method === 'GET') {
-    const [budgets, categories, assignments, spend] = await Promise.all([
-      sql`select * from budgets order by created_at desc`,
-      sql`select * from categories order by sort_order`,
-      sql`select * from assignments`,
-      sql`select budget_id, category_id, sum(budget_amount)::bigint as spent
-           from entries where entry_type in ('expense','correction')
-           group by budget_id, category_id`,
-    ]);
-    return json({
-      budgets: budgets.map((b) => ({ ...coerceMoney(b, MONEY_BUDGET), default_rate: Number(b.default_rate) })),
-      categories: categories.map((c) => coerceMoney(c, MONEY_CAT)),
-      assignments,
-      spend: spend.map((s) => ({ ...s, spent: Number(s.spent) })),
-    }, 200, request);
-  }
-
-  if (path === '/api/admin/budgets' && method === 'POST') {
-    const b = await request.json();
-    if (!b.name || !b.currency) return json({ error: 'Name and currency are required' }, 400, request);
-    const id = b.id || `bud_${crypto.randomUUID().slice(0, 8)}`;
-
-    await sql`
-      insert into budgets (id, name, currency, base_currency, default_rate, funded_base, starts_on, ends_on)
-      values (${id}, ${b.name}, ${b.currency}, ${b.base_currency || 'NZD'},
-              ${b.default_rate || 1}, ${b.funded_base ?? null},
-              ${b.starts_on || null}, ${b.ends_on || null})`;
-
-    for (const [i, c] of (b.categories || []).entries()) {
-      await sql`
-        insert into categories (id, budget_id, name, allocated, sort_order)
-        values (${`cat_${crypto.randomUUID().slice(0, 8)}`}, ${id}, ${c.name},
-                ${Math.round(c.allocated)}, ${i + 1})`;
-    }
-    for (const raw of (b.emails || [])) {
-      const em = normaliseEmail(raw);
-      if (em) {
-        await sql`insert into assignments (budget_id, email) values (${id}, ${em})
-                  on conflict do nothing`;
-      }
-    }
-    return json({ id }, 201, request);
-  }
-
-  const assignMatch = path.match(/^\/api\/admin\/budgets\/([^/]+)\/assignments$/);
-  if (assignMatch && method === 'POST') {
-    const { emails } = await request.json();
-    const added = [];
-    for (const raw of emails || []) {
-      const em = normaliseEmail(raw);
-      if (!em) continue;
-      await sql`insert into assignments (budget_id, email) values (${assignMatch[1]}, ${em})
-                on conflict do nothing`;
-      added.push(em);
-    }
-    return json({ added }, 200, request);
-  }
-
-  const entriesMatch = path.match(/^\/api\/admin\/budgets\/([^/]+)\/entries$/);
-  if (entriesMatch && method === 'GET') {
-    const rows = await sql`
-      select * from entries where budget_id = ${entriesMatch[1]}
-      order by spent_on, created_at`;
-    return json({
-      entries: rows.map((e) => ({ ...coerceMoney(e, MONEY_ENTRY), rate: Number(e.rate) })),
-    }, 200, request);
-  }
-
-  return json({ error: 'Not found' }, 404, request);
-}
-
 /* ---------------- entry point ---------------- */
 
 export default async function handler(request) {
@@ -304,8 +226,6 @@ export default async function handler(request) {
     const put = path.match(/^\/api\/receipts\/([^/]+)$/);
     if (put && request.method === 'PUT') return await putReceipt(request, email, put[1]);
     if (put && request.method === 'GET') return await getReceipt(request, email, put[1]);
-
-    if (path.startsWith('/api/admin/')) return await adminRouter(request, email, path);
 
     return json({ error: 'Not found' }, 404, request);
   } catch (err) {

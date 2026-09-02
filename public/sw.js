@@ -1,5 +1,5 @@
 // Cache-first shell so the app opens with no signal. Bump SHELL on every deploy.
-const SHELL = 'field-budget-v6';
+const SHELL = 'field-budget-v9';
 const ASSETS = ['/', '/index.html', '/app.css', '/app.js', '/manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
