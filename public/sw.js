@@ -1,5 +1,5 @@
 // Cache-first shell so the app opens with no signal. Bump SHELL on every deploy.
-const SHELL = 'field-budget-v16';
+const SHELL = 'field-budget-v17';
 // Fonts and logo are precached: a brand webfont that only arrives online would
 // reflow the layout the moment an instructor regains signal mid-entry.
 const ASSETS = [

@@ -77,7 +77,10 @@ function fmt(amountMinor, cur, { sign = false } = {}) {
 const budget = () => state.budgets.find((b) => b.id === state.budgetId);
 const budgetEntries = () => state.entries.filter((e) => e.budget_id === state.budgetId);
 
-function categoryBalances() {
+// Level 1 is a programme leg and carries the currency; levels 2 and 3 are
+// categories and subcategories. Allocation lives on leaves, recursively: a node
+// with children is the sum of its children, one without holds its own figure.
+function categoryTree() {
   const b = budget();
   if (!b) return [];
   const spend = {};
@@ -86,68 +89,103 @@ function categoryBalances() {
     if (!e.category_id) continue;
     spend[e.category_id] = (spend[e.category_id] || 0) + e.budget_amount;
   }
-  // Categories are one level deep. A parent with subcategories IS the sum of
-  // them — it holds no allocation of its own, so there is one place each figure
-  // is set and the top line always equals what is underneath it.
   const kidsOf = (id) => b.categories.filter((c) => c.parent_id === id);
-  const shape = (c, isSub) => {
-    const kids = isSub ? [] : kidsOf(c.id);
+
+  const shape = (c, depth, leg) => {
+    const self = leg || c;                    // depth 1 is its own leg
+    const kids = kidsOf(c.id).map((k) => shape(k, depth + 1, self));
     const allocated = kids.length
       ? kids.reduce((n, k) => n + k.allocated, 0)
-      : c.allocated;
-    const spent = (spend[c.id] || 0) + kids.reduce((n, k) => n + (spend[k.id] || 0), 0);
+      : (c.allocated || 0);
+    const spent = (spend[c.id] || 0) + kids.reduce((n, k) => n + k.spent, 0);
     return {
-      ...c, allocated, spent, isSub,
+      ...c, depth, kids, allocated, spent,
+      currency: self.currency,
       remaining: allocated - spent,
       pct: allocated > 0 ? Math.min(100, (spent / allocated) * 100) : (spent > 0 ? 100 : 0),
       over: spent > allocated,
     };
   };
+  return b.categories.filter((c) => !c.parent_id).map((leg) => shape(leg, 1, null));
+}
 
+// Flattened for rendering, depth preserved so each row can be indented.
+function categoryRows() {
   const out = [];
-  for (const p of b.categories.filter((c) => !c.parent_id)) {
-    out.push(shape(p, false));
-    for (const k of kidsOf(p.id)) out.push(shape(k, true));
-  }
+  const walk = (n) => { out.push(n); n.kids.forEach(walk); };
+  categoryTree().forEach(walk);
   return out;
 }
 
-// Flat list for the spend form's dropdown, grouped by parent.
-// rates maps a currency code to budget-currency units per 1 unit of it, e.g. a
-// PEN budget: { NZD: 2.20, USD: 3.34 }. default_rate is the pre-map fallback.
-// Offer the budget currency first, then anything the admin set a rate for.
-function currencyChoices(b) {
-  const out = [b.currency];
-  for (const c of Object.keys((b && b.rates) || {})) if (!out.includes(c)) out.push(c);
-  for (const c of [b.base_currency || 'NZD', 'USD', 'EUR']) if (!out.includes(c)) out.push(c);
+// Which leg a category belongs to — the conversion target for anything logged
+// against it, and where its rates live.
+function legOf(categoryId) {
+  const b = budget();
+  if (!b) return null;
+  const byId = Object.fromEntries(b.categories.map((c) => [c.id, c]));
+  let node = byId[categoryId];
+  let guard = 0;
+  while (node && node.parent_id && guard++ < 5) node = byId[node.parent_id];
+  return node || null;
+}
+
+// The first leaf, used when the dock's "Log spend" button opens the form with
+// nothing selected.
+function firstLeafId() {
+  const rows = categoryRows();
+  const leaf = rows.find((r) => r.depth > 1 && !r.kids.length);
+  return leaf ? leaf.id : null;
+}
+
+// Offer the leg's own currency first, then anything the admin set a rate for.
+function currencyChoices(leg) {
+  const b = budget();
+  const out = leg && leg.currency ? [leg.currency] : [];
+  for (const c of Object.keys((leg && leg.rates) || {})) if (!out.includes(c)) out.push(c);
+  for (const c of [(b && b.base_currency) || 'NZD', 'USD']) if (!out.includes(c)) out.push(c);
   return out;
 }
 
-function planningRate(b, currency) {
-  if (!b || currency === b.currency) return 1;
-  const r = b.rates && b.rates[currency];
-  if (Number.isFinite(Number(r)) && Number(r) > 0) return Number(r);
-  // Only fall back when the legacy single rate was actually meant for this
-  // currency — otherwise leave it blank and make the instructor enter one.
-  if (currency === (b.base_currency || 'NZD') && Number(b.default_rate) > 0) {
-    return Number(b.default_rate);
+// A leg's rates map is LEG-currency units per 1 unit of the given currency.
+// Returns null when there is no rate, so the field stays blank rather than
+// prefilling something plausible but wrong.
+// Cash can be held in any leg's currency plus the base — a Peru/Ecuador
+// programme means PEN, USD and NZD all plausibly in a pocket.
+function cashCurrencies(b) {
+  const out = [];
+  for (const l of (b ? b.categories.filter((c) => !c.parent_id) : [])) {
+    if (l.currency && !out.includes(l.currency)) out.push(l.currency);
+    for (const c of Object.keys(l.rates || {})) if (!out.includes(c)) out.push(c);
   }
-  return null;
+  for (const c of [(b && b.base_currency) || 'NZD', 'USD']) if (!out.includes(c)) out.push(c);
+  return out;
+}
+
+function planningRate(leg, currency) {
+  if (!leg || currency === leg.currency) return 1;
+  const r = Number((leg.rates || {})[currency]);
+  return Number.isFinite(r) && r > 0 ? r : null;
 }
 
 function categoryOptions(selectedId) {
-  const b = budget();
-  if (!b) return '';
-  const parents = b.categories.filter((c) => !c.parent_id);
-  return parents.map((p) => {
-    const kids = b.categories.filter((c) => c.parent_id === p.id);
-    const opt = (c, label) =>
-      `<option value="${c.id}" ${c.id === selectedId ? 'selected' : ''}>${label}</option>`;
-    if (!kids.length) return opt(p, p.name);
-    // A parent with subcategories holds no allocation of its own, so logging
-    // straight to it would always read as unbudgeted. Only the leaves are
-    // selectable.
-    return `<optgroup label="${p.name}">${kids.map((k) => opt(k, k.name)).join('')}</optgroup>`;
+  // <optgroup> cannot nest, so three levels render as indented flat options
+  // grouped by leg. Only leaves are selectable: a node with children holds no
+  // allocation, so logging to it would always read as unbudgeted.
+  const NB = '\u00a0';
+  return categoryTree().map((leg) => {
+    const opts = [];
+    const walk = (n, depth) => {
+      const pad = NB.repeat(Math.max(0, (depth - 2) * 3));
+      if (!n.kids.length) {
+        opts.push(`<option value="${n.id}" ${n.id === selectedId ? 'selected' : ''}>${pad}${n.name}</option>`);
+      } else {
+        opts.push(`<option disabled>${pad}${n.name}</option>`);
+        n.kids.forEach((k) => walk(k, depth + 1));
+      }
+    };
+    leg.kids.forEach((k) => walk(k, 2));
+    if (!opts.length) return '';
+    return `<optgroup label="${leg.name} (${leg.currency || '\u2014'})">${opts.join('')}</optgroup>`;
   }).join('');
 }
 
@@ -253,7 +291,10 @@ function render() {
   const pendingCount = state.entries.filter((e) => e.pending === 1).length;
 
   document.getElementById('budgetName').textContent = b ? b.name : 'No budget assigned';
-  document.getElementById('budgetSub').textContent = b ? `${b.currency} · ${state.email || ''}` : (state.email || '');
+  const legList = b ? b.categories.filter((c) => !c.parent_id).map((l) => l.currency).filter(Boolean) : [];
+  document.getElementById('budgetSub').textContent = b
+    ? `${[...new Set(legList)].join(', ') || 'no legs'} · ${state.email || ''}`
+    : (state.email || '');
 
   const chip = document.getElementById('syncChip');
   if (pendingCount) { chip.textContent = `${pendingCount} to sync`; chip.dataset.state = 'pending'; }
@@ -273,7 +314,8 @@ function render() {
     const sel = el('<select id="budgetPicker"></select>');
     for (const bb of state.budgets) {
       const o = document.createElement('option');
-      o.value = bb.id; o.textContent = `${bb.name} · ${bb.currency}`;
+      const curs = [...new Set(bb.categories.filter((c) => !c.parent_id).map((c) => c.currency).filter(Boolean))];
+      o.value = bb.id; o.textContent = `${bb.name}${curs.length ? ` · ${curs.join(', ')}` : ''}`;
       o.selected = bb.id === state.budgetId;
       sel.append(o);
     }
@@ -283,26 +325,56 @@ function render() {
     view.append(sel);
   }
 
-  const cats = categoryBalances();
-  // Parents already include their children, so sum top level only.
-  const totalLeft = cats.filter((c) => !c.isSub).reduce((n, c) => n + c.remaining, 0);
-  view.append(el(`<div class="section-head"><h2>Remaining</h2><span class="num">${fmt(totalLeft, b.currency)} left</span></div>`));
+  const base = b.base_currency || 'NZD';
+  const tree = categoryTree();
 
-  const list = el('<div class="gauge-list"></div>');
-  for (const c of cats) {
-    const g = el(`
-      <button class="gauge ${c.isSub ? 'sub' : ''} ${c.over ? 'over' : ''}" type="button">
-        <span class="gauge-top">
-          <span class="gauge-name">${c.name}</span>
-          <span class="gauge-left num">${fmt(c.remaining, b.currency)}</span>
-        </span>
-        <span class="gauge-meta num">${fmt(c.spent, b.currency)} of ${fmt(c.allocated, b.currency)} spent</span>
-        <span class="gauge-track"><span class="gauge-fill" style="width:${c.pct}%"></span></span>
-      </button>`);
-    g.addEventListener('click', () => openSpend(c.id));
-    list.append(g);
+  for (const leg of tree) {
+    // Each leg has its own currency, so a single combined total would be
+    // meaningless. The base-currency figure sits alongside for reporting.
+    const nzd = leg.currency === base
+      ? leg.remaining
+      : (planningRate(leg, base) ? Math.round(leg.remaining / planningRate(leg, base)) : null);
+
+    view.append(el(`<div class="section-head">
+        <h2>${leg.name}</h2>
+        <span class="num">${fmt(leg.remaining, leg.currency)} left${
+          nzd !== null && leg.currency !== base ? ` · ≈ ${fmt(nzd, base)}` : ''}</span>
+      </div>`));
+
+    const list = el('<div class="gauge-list"></div>');
+    const walk = (n) => {
+      const leaf = !n.kids.length;
+      const g = el(`
+        <button class="gauge d${n.depth} ${n.over ? 'over' : ''}" type="button" ${leaf ? '' : 'data-parent="1"'}>
+          <span class="gauge-top">
+            <span class="gauge-name">${n.name}</span>
+            <span class="gauge-left num">${fmt(n.remaining, n.currency)}</span>
+          </span>
+          <span class="gauge-meta num">${fmt(n.spent, n.currency)} of ${fmt(n.allocated, n.currency)} spent</span>
+          <span class="gauge-track"><span class="gauge-fill" style="width:${n.pct}%"></span></span>
+        </button>`);
+      // Only leaves can be logged against; tapping a roll-up opens the form on
+      // its first leaf rather than doing nothing.
+      g.addEventListener('click', () => {
+        if (leaf) return openSpend(n.id);
+        const firstLeaf = (function dig(x) {
+          return x.kids.length ? dig(x.kids[0]) : x;
+        })(n);
+        openSpend(firstLeaf.id);
+      });
+      list.append(g);
+      n.kids.forEach(walk);
+    };
+    leg.kids.forEach(walk);
+    if (!leg.kids.length) {
+      list.append(el('<div class="empty">No categories in this leg yet.</div>'));
+    }
+    view.append(list);
   }
-  view.append(list);
+
+  if (!tree.length) {
+    view.append(el('<div class="empty">This budget has no legs set up yet.</div>'));
+  }
 
   const floats = cashFloat();
   view.append(el(`<div class="section-head"><h2>Cash on hand</h2><span>${state.email ? 'yours' : ''}</span></div>`));
@@ -389,7 +461,11 @@ async function compress(file, max = RECEIPT_MAX_PX, quality = RECEIPT_QUALITY) {
 function openSpend(categoryId) {
   const b = budget();
   if (!b) return;
-  const cats = categoryBalances();
+  if (!categoryId) categoryId = firstLeafId();
+  if (!categoryId) { toast('No categories set up yet'); return; }
+  // Currency, rates and the conversion target all come from the leg the chosen
+  // category sits under, not from the budget.
+  let leg = legOf(categoryId);
   const form = el(`
     <div>
       <h2>Log spend</h2>
@@ -399,7 +475,7 @@ function openSpend(categoryId) {
         <div>
           <label for="cur">Currency</label>
           <select id="cur">
-            ${currencyChoices(b).map((c) => `<option ${c === b.currency ? 'selected' : ''}>${c}</option>`).join('')}
+            ${currencyChoices(leg).map((c) => `<option ${c === (leg && leg.currency) ? 'selected' : ''}>${c}</option>`).join('')}
           </select>
         </div>
         <div>
@@ -408,7 +484,7 @@ function openSpend(categoryId) {
         </div>
       </div>
       <div id="rateWrap" hidden>
-        <label for="rate">Rate — ${b.currency} per 1 unit</label>
+        <label for="rate" id="rateLabel">Rate</label>
         <input class="num" id="rate" type="number" inputmode="decimal" step="0.0001" value="${b.default_rate || 1}">
         <p class="hint" id="rateHint"></p>
       </div>
@@ -437,6 +513,8 @@ function openSpend(categoryId) {
 
   const amt = form.querySelector('#amt');
   const cur = form.querySelector('#cur');
+  const catSel = form.querySelector('#cat');
+  const rateLabel = form.querySelector('#rateLabel');
   const rateWrap = form.querySelector('#rateWrap');
   const rate = form.querySelector('#rate');
   const rateHint = form.querySelector('#rateHint');
@@ -449,33 +527,47 @@ function openSpend(categoryId) {
     // Put the converted figure on the button. A wrong rate then has to get past
     // your eyes on the way to being saved, instead of failing silently.
     btn.textContent = foreign && conv > 0
-      ? `Save ${conv.toFixed(2)} ${b.currency}`
+      ? `Save ${conv.toFixed(2)} ${(leg && leg.currency) || ''}`
       : 'Save spend';
   }
   function updateRate() {
-    const foreign = cur.value !== b.currency;
+    const legCur = (leg && leg.currency) || '';
+    const foreign = cur.value !== legCur;
     rateWrap.hidden = !foreign;
+    rateLabel.textContent = `Rate — ${legCur} per 1 unit`;
     if (!foreign) {
       rate.value = 1; rateHint.textContent = ''; wasForeign = false;
       saveLabel(0, false); return;
     }
-    // Entering a foreign currency: fill in the planning rate for THAT currency.
-    // A single per-budget rate could only ever be right for one of them.
+    // Fill in the planning rate for THAT currency, from the leg's rates map.
     if (!wasForeign || rate.dataset.forCur !== cur.value) {
-      rate.value = planningRate(b, cur.value) || '';
+      rate.value = planningRate(leg, cur.value) || '';
       rate.dataset.forCur = cur.value;
     }
     wasForeign = true;
     const a = Number(amt.value) || 0;
     const conv = a * (Number(rate.value) || 0);
     rateHint.innerHTML = conv > 0
-      ? `Counts against the budget as <strong>${conv.toFixed(2)} ${b.currency}</strong>. Card rates differ from this; reconciliation will catch it.`
-      : `Enter the rate in ${b.currency} per 1 ${cur.value}.`;
+      ? `Counts against ${leg.name} as <strong>${conv.toFixed(2)} ${legCur}</strong>. Card rates differ from this; reconciliation will catch it.`
+      : `Enter the rate in ${legCur} per 1 ${cur.value}.`;
     saveLabel(conv, true);
   }
   cur.addEventListener('change', updateRate);
   rate.addEventListener('input', updateRate);
   amt.addEventListener('input', updateRate);
+
+  // Picking a category in a different leg changes the currency and the rates,
+  // so the currency list is rebuilt rather than left pointing at the old leg.
+  catSel.addEventListener('change', () => {
+    const next = legOf(catSel.value);
+    if (!next || next.id === (leg && leg.id)) return;
+    leg = next;
+    cur.innerHTML = currencyChoices(leg)
+      .map((c) => `<option ${c === leg.currency ? 'selected' : ''}>${c}</option>`).join('');
+    wasForeign = false;
+    delete rate.dataset.forCur;
+    updateRate();
+  });
 
   form.querySelector('#method').addEventListener('click', (ev) => {
     const btn = ev.target.closest('button[data-v]');
@@ -503,9 +595,10 @@ function openSpend(categoryId) {
     err.hidden = true;
 
     const currency = cur.value;
-    const r = currency === b.currency ? 1 : (Number(rate.value) || 0);
+    const legCur = (leg && leg.currency) || currency;
+    const r = currency === legCur ? 1 : (Number(rate.value) || 0);
     if (!r || r < 0) {
-      err.textContent = `Enter the rate in ${b.currency} per 1 ${currency}.`;
+      err.textContent = `Enter the rate in ${legCur} per 1 ${currency}.`;
       err.hidden = false; rate.focus(); return;
     }
 
@@ -522,7 +615,7 @@ function openSpend(categoryId) {
       email: state.email, entry_type: 'expense', group_id: null,
       spent_on: form.querySelector('#date').value,
       amount: amountMinor, currency, rate: r,
-      budget_amount: Math.round(amountMinor * r * (minor(b.currency) / minor(currency))),
+      budget_amount: Math.round(amountMinor * r * (minor(legCur) / minor(currency))),
       payment_method: method,
       description: form.querySelector('#desc').value.trim(),
       receipt_key, corrects_id: null,
@@ -554,18 +647,18 @@ function openCash() {
         <label for="wamt">Amount received</label>
         <input class="amount-input num" id="wamt" type="number" inputmode="decimal" step="0.01" placeholder="0.00">
         <label for="wcur">Currency</label>
-        <select id="wcur">${currencyChoices(b).map((c) => `<option ${c === b.currency ? 'selected' : ''}>${c}</option>`).join('')}</select>
+        <select id="wcur">${cashCurrencies(b).map((c) => `<option>${c}</option>`).join('')}</select>
       </div>
       <div id="ex" hidden>
         <label for="xout">Gave</label>
         <div class="field-row">
           <div><input class="num" id="xout" type="number" inputmode="decimal" step="0.01" placeholder="0.00"></div>
-          <div><select id="xoutcur">${currencyChoices(b).map((c) => `<option ${c === (b.base_currency || 'USD') ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
+          <div><select id="xoutcur">${cashCurrencies(b).map((c) => `<option ${c === (b.base_currency || 'USD') ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
         </div>
         <label for="xin">Received</label>
         <div class="field-row">
           <div><input class="num" id="xin" type="number" inputmode="decimal" step="0.01" placeholder="0.00"></div>
-          <div><select id="xincur">${currencyChoices(b).map((c) => `<option ${c === b.currency ? 'selected' : ''}>${c}</option>`).join('')}</select></div>
+          <div><select id="xincur">${cashCurrencies(b).map((c) => `<option>${c}</option>`).join('')}</select></div>
         </div>
         <p class="hint" id="xhint"></p>
       </div>
@@ -646,13 +739,15 @@ function openHistory() {
   }
   for (const e of rows) {
     const cat = b.categories.find((c) => c.id === e.category_id);
+    const entryLeg = e.category_id ? legOf(e.category_id) : null;
     const label = e.entry_type === 'expense' ? (cat ? cat.name : 'Spend')
       : e.entry_type === 'withdrawal' ? 'Cash withdrawn' : 'Exchange';
     wrap.append(el(`
       <div class="entry">
         <div class="entry-main">
           <span class="entry-desc">${e.description || label}</span>
-          <span class="entry-meta"><span class="dot ${e.pending ? 'pending' : ''}"></span>${e.spent_on} · ${label}${e.payment_method === 'card' ? ' · card' : ''}</span>
+          <span class="entry-meta"><span class="dot ${e.pending ? 'pending' : ''}"></span>${e.spent_on} · ${
+          entryLeg ? `${entryLeg.name} · ` : ''}${label}${e.payment_method === 'card' ? ' · card' : ''}</span>
         </div>
         <span class="entry-amt num">${fmt(e.amount, e.currency, { sign: e.entry_type !== 'expense' })}</span>
       </div>`));
@@ -667,7 +762,7 @@ function openHistory() {
 document.querySelector('.dock').addEventListener('click', (ev) => {
   const btn = ev.target.closest('[data-open]');
   if (!btn) return;
-  if (btn.dataset.open === 'spend') openSpend(budget()?.categories?.[0]?.id);
+  if (btn.dataset.open === 'spend') openSpend(firstLeafId());
   if (btn.dataset.open === 'cash') openCash();
   if (btn.dataset.open === 'history') openHistory();
 });

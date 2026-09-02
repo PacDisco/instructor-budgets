@@ -89,21 +89,29 @@ async function getMe(request, email) {
     // Parent's position first, then parent-before-children, then the child's
     // own position — so the field app lists categories in the same order the
     // admin arranged them.
-    sql`select c.* from categories c
-          left join categories p on p.id = c.parent_id
-         where c.budget_id = any(${ids})
-         order by coalesce(p.sort_order, c.sort_order),
-                  (c.parent_id is not null),
-                  c.sort_order,
-                  c.id`,
+    // Recursive materialised path so ordering holds at three levels. Level 1 is
+    // a programme leg and carries the currency and rates.
+    sql`with recursive tree as (
+          select c.*, 1 as depth, lpad(c.sort_order::text, 6, '0') as path
+            from categories c
+           where c.parent_id is null and c.budget_id = any(${ids})
+          union all
+          select c.*, t.depth + 1, t.path || '.' || lpad(c.sort_order::text, 6, '0')
+            from categories c
+            join tree t on c.parent_id = t.id
+        )
+        select * from tree order by path, id`,
     sql`select * from entries where budget_id = any(${ids}) order by received_at`,
   ]);
 
-  const cats = categories.map((c) => coerceMoney(c, MONEY_CAT));
+  const cats = categories.map((c) => ({
+    ...coerceMoney(c, MONEY_CAT),
+    rates: c.rates || {},
+    depth: Number(c.depth),
+  }));
   const shaped = budgets.map((b) => ({
     ...coerceMoney(b, MONEY_BUDGET),
-    default_rate: Number(b.default_rate),
-    rates: b.rates || {},
+    base_currency: b.base_currency || 'NZD',
     categories: cats.filter((c) => c.budget_id === b.id),
   }));
 

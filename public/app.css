@@ -153,13 +153,17 @@ main { padding: var(--pad) var(--pad) 108px; max-width: 560px; margin: 0 auto; }
 .gauge.over .gauge-left { color: var(--over); }
 .gauge.over .gauge-fill { background: var(--over); }
 
-/* Subcategories sit visibly inside their parent's group. */
-.gauge.sub {
+/* Three levels: leg headings are section-heads, so gauges start at depth 2.
+   Depth 3 sits inside its parent's group. */
+.gauge.d3 {
   margin-left: 14px; border-left: 3px solid var(--topaz-soft);
   padding-top: 11px; padding-bottom: 14px;
 }
-.gauge.sub .gauge-name { font-weight: 400; }
-.gauge.sub .gauge-left { font-size: 0.92rem; }
+.gauge.d3 .gauge-name { font-weight: 400; }
+.gauge.d3 .gauge-left { font-size: 0.92rem; }
+/* A roll-up row is not directly loggable; it reads as a heading with a total. */
+.gauge[data-parent] { background: #fcfefe; }
+.gauge[data-parent] .gauge-name { font-weight: 600; }
 
 /* ---- cash float ---- */
 .float-row {
