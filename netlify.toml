@@ -9,11 +9,34 @@
   status = 200
   force = true
 
+# Asset links must never fall through to the SPA handler — a TWA fetching this
+# path and getting HTML back fails verification silently, and the app renders
+# with a browser URL bar.
+[[redirects]]
+  from = "/.well-known/*"
+  to = "/.well-known/:splat"
+  status = 200
+  force = false
+
 # App shell fallback for deep links and the service worker.
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
+
+# Netlify doesn't know these extensions, so both are served as
+# application/octet-stream by default. Chrome ignores a manifest with the wrong
+# content type, and Digital Asset Links requires application/json.
+[[headers]]
+  for = "/manifest.webmanifest"
+  [headers.values]
+    Content-Type = "application/manifest+json; charset=utf-8"
+
+[[headers]]
+  for = "/.well-known/assetlinks.json"
+  [headers.values]
+    Content-Type = "application/json; charset=utf-8"
+    Access-Control-Allow-Origin = "*"
 
 [[headers]]
   for = "/sw.js"
