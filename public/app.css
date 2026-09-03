@@ -183,9 +183,16 @@ main { padding: var(--pad) var(--pad) 108px; max-width: 560px; margin: 0 auto; }
 
 /* ---- history ---- */
 .entry {
-  display: flex; gap: 12px; padding: 12px 2px;
-  border-bottom: 1px solid var(--rule);
+  display: flex; gap: 12px; padding: 12px 2px; width: 100%;
+  border: 0; border-bottom: 1px solid var(--rule);
+  background: none; font: inherit; color: inherit; text-align: left; cursor: pointer;
 }
+.entry:active { background: #fbfdfe; }
+.entry:focus-visible { outline: 2px solid var(--topaz-dark); outline-offset: 2px; }
+/* A corrected entry stays visible — the record is the point — but reads as
+   settled rather than as spend still counting. */
+.entry.void { cursor: default; opacity: .55; }
+.entry.void .entry-desc, .entry.void .entry-amt { text-decoration: line-through; }
 .entry:last-child { border-bottom: 0; }
 .entry-main { flex: 1; min-width: 0; }
 .entry-desc { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

@@ -141,6 +141,15 @@ async function postSync(request, email) {
       rejected.push({ id: e.id, reason: 'not_assigned' });
       continue;
     }
+    // A correction must point at an existing entry in the same budget. Without
+    // this a malformed or malicious client could void a row in someone else's.
+    if (e.entry_type === 'correction') {
+      if (!e.corrects_id) { rejected.push({ id: e.id, reason: 'correction_without_target' }); continue; }
+      const target = await sql`
+        select 1 from entries where id = ${e.corrects_id} and budget_id = ${e.budget_id} limit 1`;
+      if (!target.length) { rejected.push({ id: e.id, reason: 'correction_target_missing' }); continue; }
+    }
+
     try {
       await sql`
         insert into entries (

@@ -49,6 +49,7 @@ async function tx(store, mode, fn) {
 }
 
 const putEntry = (e) => tx('entries', 'readwrite', (s) => s.put(e));
+const delEntry = (id) => tx('entries', 'readwrite', (s) => s.delete(id));
 const allEntries = () => tx('entries', 'readonly', (s) => s.getAll());
 const putMeta = (k, v) => tx('meta', 'readwrite', (s) => s.put(v, k));
 const getMeta = (k) => tx('meta', 'readonly', (s) => s.get(k));
@@ -189,13 +190,26 @@ function categoryOptions(selectedId) {
   }).join('');
 }
 
+// An entry is void once a correction points at it. Corrections are how the
+// append-only ledger handles an edit: nothing is ever mutated, so sync stays a
+// plain insert-or-ignore and finance keeps the full history.
+function voidedIds() {
+  const out = new Set();
+  for (const e of budgetEntries()) {
+    if (e.entry_type === 'correction' && e.corrects_id) out.add(e.corrects_id);
+  }
+  return out;
+}
+
 function cashFloat() {
   const byCur = {};
   for (const e of budgetEntries()) {
     const add = (cur, amt) => { byCur[cur] = (byCur[cur] || 0) + amt; };
     if (e.entry_type === 'withdrawal' || e.entry_type === 'exchange' || e.entry_type === 'transfer') {
       add(e.currency, e.amount); // signed: cash in positive, cash out negative
-    } else if (e.entry_type === 'expense' && e.payment_method === 'cash') {
+    } else if ((e.entry_type === 'expense' || e.entry_type === 'correction')
+               && e.payment_method === 'cash') {
+      // A correction carries a negated amount, so this adds the cash back.
       add(e.currency, -e.amount);
     }
   }
@@ -458,7 +472,7 @@ async function compress(file, max = RECEIPT_MAX_PX, quality = RECEIPT_QUALITY) {
   });
 }
 
-function openSpend(categoryId) {
+function openSpend(categoryId, existing) {
   const b = budget();
   if (!b) return;
   if (!categoryId) categoryId = firstLeafId();
@@ -468,7 +482,7 @@ function openSpend(categoryId) {
   let leg = legOf(categoryId);
   const form = el(`
     <div>
-      <h2>Log spend</h2>
+      <h2>${existing ? 'Change spend' : 'Log spend'}</h2>
       <label for="amt">Amount</label>
       <input class="amount-input num" id="amt" type="number" inputmode="decimal" step="0.01" placeholder="0.00">
       <div class="field-row">
@@ -485,7 +499,7 @@ function openSpend(categoryId) {
       </div>
       <div id="rateWrap" hidden>
         <label for="rate" id="rateLabel">Rate</label>
-        <input class="num" id="rate" type="number" inputmode="decimal" step="0.0001" value="${b.default_rate || 1}">
+        <input class="num" id="rate" type="number" inputmode="decimal" step="0.0001">
         <p class="hint" id="rateHint"></p>
       </div>
       <label>Paid with</label>
@@ -504,11 +518,11 @@ function openSpend(categoryId) {
       </div>
       <input id="file" type="file" accept="image/*" capture="environment" hidden>
       <p class="error" id="err" hidden></p>
-      <button class="submit" type="button" id="save">Save spend</button>
+      <button class="submit" type="button" id="save">${existing ? 'Save changes' : 'Save spend'}</button>
       <button class="ghost" type="button" id="cancel">Cancel</button>
     </div>`);
 
-  let method = 'cash';
+  let method = existing ? existing.payment_method : 'cash';
   let receiptBlob = null;
 
   const amt = form.querySelector('#amt');
@@ -528,7 +542,7 @@ function openSpend(categoryId) {
     // your eyes on the way to being saved, instead of failing silently.
     btn.textContent = foreign && conv > 0
       ? `Save ${conv.toFixed(2)} ${(leg && leg.currency) || ''}`
-      : 'Save spend';
+      : (existing ? 'Save changes' : 'Save spend');
   }
   function updateRate() {
     const legCur = (leg && leg.currency) || '';
@@ -602,17 +616,24 @@ function openSpend(categoryId) {
       err.hidden = false; rate.focus(); return;
     }
 
-    const id = uuid();
-    let receipt_key = null;
+    // An entry that has never synced exists only on this device, so it is
+    // rewritten under its own id. Once synced the row is immutable and the
+    // change becomes a void plus a replacement.
+    const editInPlace = existing && existing.pending === 1;
+    const id = editInPlace ? existing.id : uuid();
+
+    let receipt_key = editInPlace ? existing.receipt_key : null;
     if (receiptBlob) {
       receipt_key = `${b.id}/${id}.jpg`;
       await putReceipt(receipt_key, receiptBlob);
     }
 
     const amountMinor = toMinor(value, currency);
-    await putEntry({
+    const groupId = existing && !editInPlace ? uuid() : (editInPlace ? existing.group_id : null);
+
+    const row = {
       id, budget_id: b.id, category_id: form.querySelector('#cat').value,
-      email: state.email, entry_type: 'expense', group_id: null,
+      email: state.email, entry_type: 'expense', group_id: groupId,
       spent_on: form.querySelector('#date').value,
       amount: amountMinor, currency, rate: r,
       budget_amount: Math.round(amountMinor * r * (minor(legCur) / minor(currency))),
@@ -620,13 +641,40 @@ function openSpend(categoryId) {
       description: form.querySelector('#desc').value.trim(),
       receipt_key, corrects_id: null,
       created_at: new Date().toISOString(), pending: 1,
-    });
+    };
+
+    if (existing && !editInPlace) {
+      // Carry the original's receipt reference across so the replacement still
+      // points at the photo, unless a new one was just taken.
+      if (!receiptBlob) {
+        row.receipt_file_id = existing.receipt_file_id || null;
+        row.receipt_link = existing.receipt_link || null;
+        row.receipt_uploaded = true;
+      }
+      await putEntry(voidOf(existing, groupId));
+    }
+    await putEntry(row);
 
     state.entries = await allEntries();
-    closeSheet(); render(); toast('Saved');
+    closeSheet(); render();
+    toast(existing ? (editInPlace ? 'Updated' : 'Corrected') : 'Saved');
     if (navigator.onLine) sync({ quiet: true });
   });
 
+  if (existing) {
+    amt.value = (existing.amount / minor(existing.currency)).toFixed(2);
+    cur.value = existing.currency;
+    rate.value = existing.rate;
+    rate.dataset.forCur = existing.currency;
+    wasForeign = existing.currency !== (leg && leg.currency);
+    form.querySelector('#desc').value = existing.description || '';
+    form.querySelector('#date').value = existing.spent_on;
+    form.querySelectorAll('#method button').forEach((x) =>
+      x.setAttribute('aria-pressed', String(x.dataset.v === method)));
+    if (existing.receipt_file_id || existing.receipt_key) {
+      form.querySelector('#snap').textContent = 'Replace photo';
+    }
+  }
   updateRate();
   openSheet(form);
   setTimeout(() => amt.focus(), 60);
@@ -730,31 +778,130 @@ function openCash() {
 
 function openHistory() {
   const b = budget();
+  const voided = voidedIds();
   const rows = budgetEntries()
+    // Corrections are bookkeeping, not events an instructor logged. The entry
+    // they void is shown struck through instead, which reads as "this was fixed"
+    // rather than two rows that look like double spending.
+    .filter((e) => e.entry_type !== 'correction')
     .slice().sort((a, c) => (c.spent_on + c.created_at).localeCompare(a.spent_on + a.created_at))
     .slice(0, 80);
+
   const wrap = el('<div><h2>Recent entries</h2></div>');
-  if (!rows.length) {
-    wrap.append(el('<div class="empty">Nothing logged yet.</div>'));
-  }
+  if (!rows.length) wrap.append(el('<div class="empty">Nothing logged yet.</div>'));
+
   for (const e of rows) {
     const cat = b.categories.find((c) => c.id === e.category_id);
     const entryLeg = e.category_id ? legOf(e.category_id) : null;
     const label = e.entry_type === 'expense' ? (cat ? cat.name : 'Spend')
       : e.entry_type === 'withdrawal' ? 'Cash withdrawn' : 'Exchange';
-    wrap.append(el(`
-      <div class="entry">
-        <div class="entry-main">
+    const isVoid = voided.has(e.id);
+
+    const row = el(`
+      <button class="entry ${isVoid ? 'void' : ''}" type="button">
+        <span class="entry-main">
           <span class="entry-desc">${e.description || label}</span>
-          <span class="entry-meta"><span class="dot ${e.pending ? 'pending' : ''}"></span>${e.spent_on} · ${
-          entryLeg ? `${entryLeg.name} · ` : ''}${label}${e.payment_method === 'card' ? ' · card' : ''}</span>
-        </div>
+          <span class="entry-meta"><span class="dot ${e.pending ? 'pending' : ''}"></span>${
+            e.spent_on} · ${entryLeg ? `${entryLeg.name} · ` : ''}${label}${
+            e.payment_method === 'card' ? ' · card' : ''}${isVoid ? ' · corrected' : ''}</span>
+        </span>
         <span class="entry-amt num">${fmt(e.amount, e.currency, { sign: e.entry_type !== 'expense' })}</span>
-      </div>`));
+      </button>`);
+    if (!isVoid) row.addEventListener('click', () => openEntry(e));
+    wrap.append(row);
   }
+
+  wrap.append(el('<p class="hint">Tap an entry to change or remove it.</p>'));
   wrap.append(el('<button class="ghost" type="button" id="hclose">Close</button>'));
   wrap.querySelector('#hclose').addEventListener('click', closeSheet);
   openSheet(wrap);
+}
+
+/* ---------------- editing an entry ----------------
+   Two paths, and which one applies depends on whether the entry has left the
+   device.
+
+   Never synced: it exists only in this browser's IndexedDB, so it is edited or
+   deleted in place. No correction, no clutter — a typo caught ten seconds later
+   should not leave a permanent trail.
+
+   Already synced: the row is immutable. An edit writes a correction that voids
+   the original plus a fresh entry with the new values; a delete writes just the
+   correction. Both carry a group_id so the pair can be read together. */
+
+function openEntry(e) {
+  const b = budget();
+  const cat = b.categories.find((c) => c.id === e.category_id);
+  const entryLeg = e.category_id ? legOf(e.category_id) : null;
+  const synced = e.pending !== 1;
+
+  const wrap = el(`
+    <div>
+      <h2>${e.description || (cat ? cat.name : 'Entry')}</h2>
+      <p class="hint">
+        ${e.spent_on} · ${entryLeg ? `${entryLeg.name} · ` : ''}${cat ? cat.name : e.entry_type}
+        · ${e.payment_method}<br>
+        <strong>${fmt(e.amount, e.currency)}</strong>${
+          e.currency !== (entryLeg && entryLeg.currency) && entryLeg
+            ? ` at ${e.rate} = ${fmt(e.budget_amount, entryLeg.currency)}` : ''}
+      </p>
+      <p class="hint">${synced
+        ? 'Already synced. Changes are recorded as a correction, so the original stays in the record.'
+        : 'Not synced yet, so this is edited in place.'}</p>
+      <button class="submit" type="button" id="eEdit">Change</button>
+      <button class="ghost" type="button" id="eDel">Remove this entry</button>
+      <button class="ghost" type="button" id="eCancel">Back</button>
+    </div>`);
+
+  wrap.querySelector('#eCancel').addEventListener('click', () => openHistory());
+
+  wrap.querySelector('#eEdit').addEventListener('click', () => {
+    if (e.entry_type !== 'expense') {
+      toast('Cash movements can only be removed, not changed');
+      return;
+    }
+    openSpend(e.category_id, e);
+  });
+
+  wrap.querySelector('#eDel').addEventListener('click', async () => {
+    if (!confirm(synced
+      ? 'Remove this entry? A correction will be recorded against it.'
+      : 'Remove this entry? It has not synced, so it disappears entirely.')) return;
+
+    if (!synced) {
+      await delEntry(e.id);
+      if (e.receipt_key) await putReceipt(e.receipt_key, null).catch(() => {});
+    } else {
+      await putEntry(voidOf(e));
+    }
+    state.entries = await allEntries();
+    closeSheet(); render(); toast('Removed');
+    if (navigator.onLine) sync({ quiet: true });
+  });
+
+  openSheet(wrap);
+}
+
+// A correction is the original with every signed figure negated, so balances and
+// the cash float net back to where they were.
+function voidOf(e, groupId) {
+  return {
+    ...e,
+    id: uuid(),
+    entry_type: 'correction',
+    corrects_id: e.id,
+    group_id: groupId || uuid(),
+    amount: -e.amount,
+    budget_amount: -e.budget_amount,
+    description: e.description ? `Correction: ${e.description}` : 'Correction',
+    email: state.email,
+    created_at: new Date().toISOString(),
+    pending: 1,
+    receipt_key: null,          // the receipt belongs to the original
+    receipt_uploaded: true,
+    receipt_file_id: null,
+    receipt_link: null,
+  };
 }
 
 /* ---------------- wiring ---------------- */
