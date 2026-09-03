@@ -6,6 +6,7 @@
 
 import { SignJWT, jwtVerify, createRemoteJWKSet } from 'jose';
 import { db } from './db.mjs';
+import { verifyCode } from './access-code.mjs';
 import { normaliseEmail, readCookie } from './http.mjs';
 
 const SESSION_DAYS = 30; // field devices go weeks between logins
@@ -105,6 +106,52 @@ export async function sendMagicLink(email, url) {
     }),
   });
   if (!res.ok) throw new Error(`Mail send failed: ${res.status} ${await res.text()}`);
+}
+
+/* ---------- Access codes ----------
+   Instructors sign in with their email and a code an admin sets. Online guessing
+   is the realistic attack on a short code, so failures are counted and the
+   account locks for a spell — the hash itself is only the second line of
+   defence, for if the database leaks. */
+
+const MAX_ATTEMPTS = 5;
+const LOCKOUT_MINUTES = 15;
+
+export async function checkAccessCode(email, code) {
+  const sql = db();
+  const rows = await sql`
+    select code_hash, failed_attempts, locked_until
+      from instructor_codes where email = ${email}`;
+
+  // No row: still do the work of a verify so an unknown address takes about as
+  // long as a wrong code, and don't say which it was.
+  if (!rows.length) {
+    await verifyCode(code, 'pbkdf2$210000$AAAAAAAAAAAAAAAAAAAAAA==$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=');
+    return { ok: false, reason: 'bad' };
+  }
+
+  const row = rows[0];
+  if (row.locked_until && new Date(row.locked_until) > new Date()) {
+    const mins = Math.ceil((new Date(row.locked_until) - Date.now()) / 60000);
+    return { ok: false, reason: 'locked', minutes: mins };
+  }
+
+  if (await verifyCode(code, row.code_hash)) {
+    await sql`update instructor_codes
+                 set failed_attempts = 0, locked_until = null, last_login_at = now()
+               where email = ${email}`;
+    return { ok: true };
+  }
+
+  const attempts = (row.failed_attempts || 0) + 1;
+  const lock = attempts >= MAX_ATTEMPTS;
+  await sql`update instructor_codes
+               set failed_attempts = ${lock ? 0 : attempts},
+                   locked_until = ${lock ? new Date(Date.now() + LOCKOUT_MINUTES * 60000).toISOString() : null}
+             where email = ${email}`;
+  return lock
+    ? { ok: false, reason: 'locked', minutes: LOCKOUT_MINUTES }
+    : { ok: false, reason: 'bad', remaining: MAX_ATTEMPTS - attempts };
 }
 
 /* ---------- Who is allowed in at all ---------- */

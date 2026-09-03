@@ -28,13 +28,28 @@
 <section class="signin" id="signin" hidden>
   <img class="signin-logo" src="/logo.png" alt="Pacific Discovery" width="314" height="84">
   <h1>Field Budget</h1>
-  <p class="signin-lede">Sign in with the address your programme director assigned to the budget.</p>
-  <div id="gbtn" class="gbtn"></div>
-  <p class="signin-or">or</p>
-  <label for="magicEmail">Email a sign-in link</label>
-  <input id="magicEmail" type="email" inputmode="email" autocomplete="email" placeholder="you@pacificdiscovery.org">
-  <button class="submit" type="button" id="magicSend">Send link</button>
+  <p class="signin-lede">Sign in with your email and the access code your programme director gave you.</p>
+  <label for="ciEmail">Email</label>
+  <input id="ciEmail" type="email" inputmode="email" autocomplete="username"
+         placeholder="you@pacificdiscovery.org">
+
+  <label for="ciCode">Access code</label>
+  <input id="ciCode" type="password" autocomplete="current-password"
+         placeholder="From your programme director">
+
+  <button class="submit" type="button" id="ciGo">Sign in</button>
   <p class="hint" id="signinMsg"></p>
+
+  <div id="altBlock" hidden>
+    <p class="signin-or">or</p>
+    <div id="gbtn" class="gbtn"></div>
+    <button class="ghost" type="button" id="magicToggle">Email me a link instead</button>
+    <div id="magicBlock" hidden>
+      <label for="magicEmail">Email a sign-in link</label>
+      <input id="magicEmail" type="email" inputmode="email" autocomplete="email" placeholder="you@pacificdiscovery.org">
+      <button class="ghost" type="button" id="magicSend">Send link</button>
+    </div>
+  </div>
 </section>
 
 <nav class="dock">

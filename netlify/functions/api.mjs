@@ -6,7 +6,7 @@ import { db, adminEmails, assignedBudgetIds, coerceMoney } from './lib/db.mjs';
 import {
   issueSession, currentEmail, SESSION_MAX_AGE,
   emailFromGoogleCredential, createMagicToken, consumeMagicToken,
-  sendMagicLink, emailIsKnown,
+  sendMagicLink, emailIsKnown, checkAccessCode,
 } from './lib/auth.mjs';
 import { ensureBudgetFolder, uploadReceipt, receiptBytes } from './lib/drive.mjs';
 
@@ -35,6 +35,35 @@ async function postGoogle(request) {
     return json({ error: 'Could not verify that Google sign-in' }, 401, request);
   }
   if (!email) return json({ error: 'That Google account has no verified email' }, 401, request);
+  if (!(await emailIsKnown(email))) {
+    return json({ error: 'not_assigned', email }, 403, request);
+  }
+
+  const token = await issueSession(email);
+  return json({ email }, 200, request, { 'set-cookie': sessionCookie(token, SESSION_MAX_AGE) });
+}
+
+async function postAccessCode(request) {
+  const body = await request.json().catch(() => ({}));
+  const email = normaliseEmail(body.email);
+  const code = String(body.code || '');
+  if (!email || !code) {
+    return json({ error: 'Enter your email and code.' }, 400, request);
+  }
+
+  const result = await checkAccessCode(email, code);
+  if (!result.ok) {
+    if (result.reason === 'locked') {
+      return json({
+        error: `Too many attempts. Try again in ${result.minutes} minute${result.minutes === 1 ? '' : 's'}, or ask your programme director for a new code.`,
+        locked: true,
+      }, 429, request);
+    }
+    // Same message whether the address is unknown or the code is wrong — the
+    // difference would be a free check on who has an account.
+    return json({ error: 'That email and code don\'t match.' }, 401, request);
+  }
+
   if (!(await emailIsKnown(email))) {
     return json({ error: 'not_assigned', email }, 403, request);
   }
@@ -235,6 +264,7 @@ export default async function handler(request) {
 
   try {
     // Public: the sign-in paths themselves.
+    if (path === '/api/auth/code' && request.method === 'POST') return await postAccessCode(request);
     if (path === '/api/auth/google' && request.method === 'POST') return await postGoogle(request);
     if (path === '/api/auth/magic-link' && request.method === 'POST') return await postMagicRequest(request);
     if (path === '/api/auth/magic' && request.method === 'GET') return await getMagicVerify(request);

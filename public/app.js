@@ -295,6 +295,7 @@ async function sync({ quiet = false } = {}) {
 
 /* ---------------- render ---------------- */
 
+const $ = (id) => document.getElementById(id);
 const view = document.getElementById('view');
 const el = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
 
@@ -937,6 +938,7 @@ function showSignIn() {
     msg.textContent = 'That link had already been used or expired. Send another.';
   }
 
+  wireAccessCode();
   wireMagicLink();
   loadGoogle();
 }
@@ -947,7 +949,55 @@ function hideSignIn() {
   document.getElementById('signin').hidden = true;
 }
 
+function wireAccessCode() {
+  const btn = $('ciGo');
+  if (btn.dataset.wired) return;
+  btn.dataset.wired = '1';
+
+  const email = $('ciEmail');
+  const code = $('ciCode');
+  const msg = $('signinMsg');
+
+  const submit = async () => {
+    if (!email.value.includes('@')) { msg.textContent = 'Enter your email address.'; email.focus(); return; }
+    if (!code.value) { msg.textContent = 'Enter your access code.'; code.focus(); return; }
+    btn.disabled = true; msg.textContent = 'Signing in…';
+    try {
+      const res = await fetch(`${API}/auth/code`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: email.value.trim(), code: code.value }),
+      });
+      if (res.ok) { code.value = ''; hideSignIn(); await boot(); return; }
+      const err = await res.json().catch(() => ({}));
+      msg.textContent = err.error === 'not_assigned'
+        ? `No budgets are assigned to ${err.email}. Ask your programme director to add that address.`
+        : (err.error || 'That did not work.');
+    } catch {
+      // The code has to be checked server-side, so there is no offline path in.
+      // Say that plainly rather than leaving them tapping a dead button.
+      msg.textContent = 'No connection. Signing in needs a connection the first time; after that the app works offline.';
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  btn.addEventListener('click', submit);
+  code.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') submit(); });
+  email.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') code.focus(); });
+  setTimeout(() => email.focus(), 80);
+}
+
 function wireMagicLink() {
+  const toggle = document.getElementById('magicToggle');
+  if (toggle && !toggle.dataset.wired) {
+    toggle.dataset.wired = '1';
+    toggle.addEventListener('click', () => {
+      const blk = document.getElementById('magicBlock');
+      blk.hidden = !blk.hidden;
+      if (!blk.hidden) document.getElementById('magicEmail').focus();
+    });
+  }
   const btn = document.getElementById('magicSend');
   const input = document.getElementById('magicEmail');
   const msg = document.getElementById('signinMsg');
@@ -990,6 +1040,7 @@ async function loadGoogle() {
     ({ google_client_id: clientId } = await res.json());
   } catch { /* offline: the magic-link path is still visible */ }
   if (!clientId) { hideGoogle('config'); return; }
+  document.getElementById('altBlock').hidden = false;
 
   await new Promise((resolve, reject) => {
     if (window.google?.accounts?.id) return resolve();
