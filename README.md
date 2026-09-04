@@ -152,9 +152,17 @@ No passwords are stored, hashed, or handled anywhere.
 
 ## Receipts
 
-Photo → compressed client-side to ~1200px → queued in IndexedDB → uploaded on its
+Photo → compressed client-side to 1600px → queued in IndexedDB → uploaded on its
 own request → service account writes it into the Shared Drive → Drive file ID and
 link stored on the entry.
+
+Files are named from the entry itself, e.g.
+`2026-02-07 - Food - Pisonay Calca lunch - PEN 355.00 - katie [a1b2c3d4].jpg`.
+Date first so a folder sorts chronologically, and the amount included because
+that is what gets matched against a bank statement. The note travels in an
+`x-receipt-note` header, base64-encoded so accented descriptions survive: the
+photo is uploaded before the ledger syncs, so the server cannot read the
+description from the database yet.
 
 Receipts upload separately from the ledger so a stuck photo on a bad uplink never
 blocks a small taxi fare from syncing.

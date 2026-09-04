@@ -245,10 +245,18 @@ async function pushOutbox() {
     try {
       const blob = await getReceipt(e.receipt_key);
       if (!blob) { await putEntry({ ...e, receipt_uploaded: true }); continue; }
+      // Receipts upload before the ledger does, so the server can't look up what
+      // this entry was for. Send a note it can name the file with. A header
+      // rather than a query string: URLs get logged, and this is the
+      // instructor's own free text.
       const r = await fetch(
         `${API}/receipts/${encodeURIComponent(e.id)}?budget=${encodeURIComponent(e.budget_id)}`,
         { method: 'PUT', credentials: 'include',
-          headers: { 'content-type': blob.type || 'image/jpeg' }, body: blob }
+          headers: {
+            'content-type': blob.type || 'image/jpeg',
+            'x-receipt-note': receiptNote(e),
+          },
+          body: blob }
       );
       if (r.ok) {
         const { file_id, link } = await r.json();
@@ -282,6 +290,25 @@ async function pushOutbox() {
     if (e) await putEntry({ ...e, pending: 0 });
   }
   return { pushed: accepted.length };
+}
+
+// Base64 so accented descriptions survive — header values must be ASCII, and
+// "Almuerzo Pisonay Calca" is more likely than not in Peru.
+function receiptNote(e) {
+  const b = state.budgets.find((x) => x.id === e.budget_id);
+  const cat = b && b.categories.find((c) => c.id === e.category_id);
+  const parts = [
+    e.spent_on,
+    cat ? cat.name : null,
+    e.description || null,
+    `${e.currency} ${(e.amount / minor(e.currency)).toFixed(2)}`,
+    (e.email || '').split('@')[0] || null,
+  ].filter(Boolean);
+  try {
+    return btoa(String.fromCharCode(...new TextEncoder().encode(parts.join(' - '))));
+  } catch {
+    return '';
+  }
 }
 
 let syncing = false;

@@ -203,6 +203,32 @@ async function postSync(request, email) {
 
 // Receipts go up on their own request so a stuck photo on a bad uplink never
 // blocks a small taxi fare from syncing.
+// The instructor's own description makes these findable in Drive months later,
+// which a UUID does not. The entry hasn't synced yet when the photo arrives, so
+// the note is sent by the client rather than read from the database.
+function receiptFilename(noteHeader, email, entryId) {
+  const stamp = new Date().toISOString().slice(0, 10);
+  const short = entryId.slice(0, 8);
+  let note = '';
+  if (noteHeader) {
+    try {
+      note = new TextDecoder().decode(
+        Uint8Array.from(atob(noteHeader), (c) => c.charCodeAt(0)));
+    } catch { note = ''; }
+  }
+
+  note = note
+    .replace(/[\/\\]/g, '-')        // path separators confuse Drive clients
+    .replace(/[\u0000-\u001f]/g, '') // control characters from a paste
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 110);
+
+  return note
+    ? `${note} [${short}].jpg`
+    : `${stamp} - ${email.split('@')[0]} - ${short}.jpg`;
+}
+
 async function putReceipt(request, email, entryId) {
   const sql = db();
   const budgetId = new URL(request.url).searchParams.get('budget');
@@ -224,12 +250,11 @@ async function putReceipt(request, email, entryId) {
     console.error('receipt folder:', err);
     return json({ error: `Drive folder unavailable: ${err.message}` }, 502, request);
   }
-  const stamp = new Date().toISOString().slice(0, 10);
   let uploaded;
   try {
     uploaded = await uploadReceipt({
       folderId,
-      name: `${stamp}-${email.split('@')[0]}-${entryId.slice(0, 8)}.jpg`,
+      name: receiptFilename(request.headers.get('x-receipt-note'), email, entryId),
       contentType: request.headers.get('content-type') || 'image/jpeg',
       bytes,
     });

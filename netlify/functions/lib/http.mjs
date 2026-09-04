@@ -15,7 +15,7 @@ export function corsHeaders(request) {
   if (origin && allowed().includes(origin)) {
     h['access-control-allow-origin'] = origin;
     h['access-control-allow-credentials'] = 'true';
-    h['access-control-allow-headers'] = 'content-type';
+    h['access-control-allow-headers'] = 'content-type, x-receipt-note';
     h['access-control-allow-methods'] = 'GET,POST,PUT,OPTIONS';
   }
   return h;
