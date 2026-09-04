@@ -69,9 +69,16 @@ Two separate things in the same project:
 application. Add `https://budget.pacificdiscovery.org` to Authorised JavaScript
 origins. Copy the client ID to `GOOGLE_CLIENT_ID`.
 
-**Drive service account.** Create a service account, no roles needed. Create a
-JSON key. Enable the Drive API. Then in Google Drive, open the Shared Drive for
+**Drive service account.** Create a service account, no project IAM roles
+needed. Create a JSON key. **Enable the Google Drive API** in the project —
+nothing works until this is on. Then in Google Drive, open the Shared Drive for
 receipts and add the service account's email as a **Content manager**.
+
+The code requests the full `drive` scope rather than `drive.file`. `drive.file`
+is per-file and only covers what the app itself created, so an admin-created
+receipts folder is invisible to it and every call returns 404. What the service
+account can actually reach is bounded by its Shared Drive membership, not by the
+scope, so keep it a member of only the receipts drive.
 
 A service account has no Drive storage quota of its own, so it cannot own files
 in a personal My Drive — a Shared Drive is required, not just convenient. Copy the

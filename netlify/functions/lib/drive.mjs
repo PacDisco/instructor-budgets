@@ -44,7 +44,12 @@ export function normalisePrivateKey(raw) {
   return k.endsWith('\n') ? k : k + '\n';
 }
 
-const SCOPE = 'https://www.googleapis.com/auth/drive.file';
+// Full drive scope, not drive.file. drive.file is per-file and only covers what
+// the app itself created — an admin-created receipts folder is invisible to it
+// and every call returns 404. The blast radius is bounded by Drive membership
+// rather than by scope: this service account is a member of exactly one Shared
+// Drive, so that is all it can reach.
+const SCOPE = 'https://www.googleapis.com/auth/drive';
 let cachedToken = null; // { token, expires }
 
 async function accessToken() {
@@ -223,7 +228,9 @@ export async function diagnose(sql) {
       // and the raw body buries which one it is behind 300 characters of prose.
       let why;
       if (res.status === 404) {
-        why = `404. Either the id is wrong, or ${email} has not been added as a member of the Shared Drive.`;
+        why = `404. The folder is invisible to this service account. Either the id is wrong, `
+            + `or ${email} has not been added as a member of the Shared Drive — add it as a `
+            + `Content manager. (A 404 rather than a 403 is how Drive reports "you cannot see this".)`;
       } else if (/has not been used in project|is disabled/.test(body)) {
         const project = (body.match(/project (\d+)/) || [])[1];
         why = `The Google Drive API is not enabled${project ? ` in project ${project}` : ''}. `
