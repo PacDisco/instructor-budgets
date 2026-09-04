@@ -9,6 +9,41 @@
 
 import { SignJWT, importPKCS8 } from 'jose';
 
+// Service account keys arrive in more shapes than they should: with \n escapes
+// from the JSON file, with real newlines if pasted from a terminal, with the
+// PEM header stripped by a careless copy, or base64-wrapped entirely. Rather
+// than one brittle replace, normalise all of them into real PKCS#8 PEM.
+export function normalisePrivateKey(raw) {
+  let k = String(raw || '').trim();
+  if (!k) return '';
+
+  // Strip surrounding quotes some UIs add.
+  if ((k.startsWith('"') && k.endsWith('"')) || (k.startsWith("'") && k.endsWith("'"))) {
+    k = k.slice(1, -1);
+  }
+
+  // Literal backslash-n sequences into real newlines.
+  k = k.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\\r/g, '\n');
+
+  // Whole value base64'd: decode once if that yields a PEM.
+  if (!k.includes('BEGIN') && /^[A-Za-z0-9+/=\s]+$/.test(k)) {
+    try {
+      const decoded = atob(k.replace(/\s+/g, ''));
+      if (decoded.includes('BEGIN')) k = decoded;
+    } catch { /* not base64, fall through */ }
+  }
+
+  // Header stripped, leaving just the base64 body — rebuild the wrapper. This is
+  // the common one: copying the JSON value without its -----BEGIN----- lines.
+  if (!k.includes('BEGIN')) {
+    const body = k.replace(/\s+/g, '');
+    if (!/^[A-Za-z0-9+/=]+$/.test(body)) return k;
+    return `-----BEGIN PRIVATE KEY-----\n${body.match(/.{1,64}/g).join('\n')}\n-----END PRIVATE KEY-----\n`;
+  }
+
+  return k.endsWith('\n') ? k : k + '\n';
+}
+
 const SCOPE = 'https://www.googleapis.com/auth/drive.file';
 let cachedToken = null; // { token, expires }
 
@@ -18,7 +53,7 @@ async function accessToken() {
   const email = process.env.GOOGLE_SA_EMAIL;
   // Netlify env vars can't hold real newlines, so the key is stored with \n
   // escapes and unescaped here.
-  const rawKey = (process.env.GOOGLE_SA_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+  const rawKey = normalisePrivateKey(process.env.GOOGLE_SA_PRIVATE_KEY);
   if (!email || !rawKey) throw new Error('GOOGLE_SA_EMAIL / GOOGLE_SA_PRIVATE_KEY not set');
 
   const key = await importPKCS8(rawKey, 'RS256');
@@ -142,7 +177,7 @@ export async function diagnose(sql) {
   const add = (name, ok, detail) => { steps.push({ name, ok, detail }); return ok; };
 
   const email = process.env.GOOGLE_SA_EMAIL;
-  const key = (process.env.GOOGLE_SA_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+  const key = normalisePrivateKey(process.env.GOOGLE_SA_PRIVATE_KEY);
   const folder = process.env.DRIVE_ROOT_FOLDER_ID;
 
   if (!add('GOOGLE_SA_EMAIL set', !!email,
@@ -151,11 +186,19 @@ export async function diagnose(sql) {
   if (!add('GOOGLE_SA_PRIVATE_KEY set', !!key,
       key ? `${key.length} chars` : 'Missing. Copy private_key from the service account JSON.')) return steps;
 
-  if (!add('private key looks like PKCS#8',
-      key.includes('BEGIN PRIVATE KEY'),
-      key.includes('BEGIN PRIVATE KEY')
-        ? 'ok'
-        : 'Does not contain "BEGIN PRIVATE KEY". The \\n escapes were probably mangled on paste.')) return steps;
+  // Actually attempt the import rather than pattern-matching the text — the
+  // normaliser reconstructs a PEM wrapper from a bare base64 body, so a header
+  // check would now always pass and tell you nothing.
+  const shape = /BEGIN PRIVATE KEY/.test(String(process.env.GOOGLE_SA_PRIVATE_KEY || ''))
+    ? 'PEM as supplied'
+    : 'base64 body, PEM wrapper reconstructed';
+  try {
+    await importPKCS8(key, 'RS256');
+    add('private key parses as PKCS#8', true, shape);
+  } catch (err) {
+    return add('private key parses as PKCS#8', false,
+      `${err.message}. Received ${key.length} chars (${shape}). Re-copy the private_key value from the service account JSON, including the -----BEGIN PRIVATE KEY----- and -----END PRIVATE KEY----- lines.`), steps;
+  }
 
   if (!add('DRIVE_ROOT_FOLDER_ID set', !!folder,
       folder ? folder : 'Missing. Copy the id from the Shared Drive folder URL.')) return steps;
