@@ -252,10 +252,21 @@ async function pushOutbox() {
       );
       if (r.ok) {
         const { file_id, link } = await r.json();
-        e.receipt_file_id = file_id; e.receipt_link = link; e.receipt_uploaded = true;
+        e.receipt_file_id = file_id; e.receipt_link = link;
+        e.receipt_uploaded = true; delete e.receipt_error;
         await putEntry(e);
+      } else {
+        // Record why. A bare catch here meant a misconfigured Drive looked
+        // exactly like a slow connection, forever.
+        const body = await r.json().catch(() => ({}));
+        e.receipt_error = body.error || `Upload failed (${r.status})`;
+        await putEntry(e);
+        console.error('receipt upload failed', r.status, body);
       }
-    } catch { /* try again next sync */ }
+    } catch (err) {
+      e.receipt_error = 'No connection while uploading the photo';
+      await putEntry(e);
+    }
   }
 
   const payload = pending.map(({ pending: _p, receipt_uploaded: _r, receipt_key: _k, ...rest }) => rest);
@@ -311,8 +322,12 @@ function render() {
     ? `${[...new Set(legList)].join(', ') || 'no legs'} · ${state.email || ''}`
     : (state.email || '');
 
+  const receiptErrors = state.entries.filter((e) => e.receipt_error && !e.receipt_uploaded).length;
   const chip = document.getElementById('syncChip');
-  if (pendingCount) { chip.textContent = `${pendingCount} to sync`; chip.dataset.state = 'pending'; }
+  if (receiptErrors) {
+    chip.textContent = `${receiptErrors} photo${receiptErrors === 1 ? '' : 's'} stuck`;
+    chip.dataset.state = 'offline';
+  } else if (pendingCount) { chip.textContent = `${pendingCount} to sync`; chip.dataset.state = 'pending'; }
   else if (!state.online) { chip.textContent = 'Offline'; chip.dataset.state = 'offline'; }
   else { chip.textContent = 'Synced'; chip.dataset.state = 'ok'; }
 
@@ -777,6 +792,66 @@ function openCash() {
   openSheet(form);
 }
 
+/* ---------------- account ----------------
+   Tap the header. Instructors hand devices over and phones get reassigned, so
+   there has to be a way out that isn't clearing browser data. */
+
+function openAccount() {
+  const pending = state.entries.filter((e) => e.pending === 1).length;
+  const wrap = el(`
+    <div>
+      <h2>Account</h2>
+      <p class="hint">Signed in as <strong>${state.email || 'unknown'}</strong></p>
+      <p class="hint">${state.online ? 'Connected' : 'Offline — entries are saved on this device'}${
+        pending ? ` · <strong>${pending} not yet synced</strong>` : ''}</p>
+      ${pending ? `<p class="error">Sync before signing out, or those ${pending} entr${
+        pending === 1 ? 'y' : 'ies'} stay on this device and nobody else can see them.</p>` : ''}
+      ${(() => {
+        const stuck = state.entries.filter((e) => e.receipt_error && !e.receipt_uploaded);
+        if (!stuck.length) return '';
+        return `<p class="error">${stuck.length} receipt photo${stuck.length === 1 ? '' : 's'} could not upload.
+          The spending is recorded either way — only the photo is missing.<br>
+          <span class="hint">${stuck[stuck.length - 1].receipt_error}</span></p>`;
+      })()}
+      <button class="submit" type="button" id="aSync">Sync now</button>
+      <button class="ghost" type="button" id="aOut">Sign out</button>
+      <button class="ghost" type="button" id="aClose">Close</button>
+    </div>`);
+
+  wrap.querySelector('#aClose').addEventListener('click', closeSheet);
+  wrap.querySelector('#aSync').addEventListener('click', async () => {
+    closeSheet();
+    await sync();
+  });
+
+  wrap.querySelector('#aOut').addEventListener('click', async () => {
+    const left = state.entries.filter((e) => e.pending === 1).length;
+    if (left && !confirm(`${left} entr${left === 1 ? 'y has' : 'ies have'} not synced yet and will be lost. Sign out anyway?`)) return;
+    if (!left && !confirm('Sign out of Field Budget on this device?')) return;
+    await signOut();
+  });
+
+  openSheet(wrap);
+}
+
+async function signOut() {
+  try {
+    await fetch(`${API}/auth/logout`, { method: 'POST', credentials: 'include' });
+  } catch { /* offline: the cookie is cleared locally either way */ }
+
+  // Clear cached budgets and the ledger. Leaving another instructor's entries on
+  // a device that has changed hands would be both confusing and a privacy leak.
+  try {
+    await tx('entries', 'readwrite', (s) => s.clear());
+    await tx('meta', 'readwrite', (s) => s.clear());
+    await tx('receipts', 'readwrite', (s) => s.clear());
+  } catch { /* nothing worth blocking sign-out over */ }
+
+  state.email = null; state.budgets = []; state.entries = []; state.budgetId = null;
+  closeSheet();
+  location.reload();
+}
+
 function openHistory() {
   const b = budget();
   const voided = voidedIds();
@@ -916,6 +991,7 @@ document.querySelector('.dock').addEventListener('click', (ev) => {
 });
 
 document.getElementById('syncChip').addEventListener('click', () => sync());
+document.getElementById('acctBtn').addEventListener('click', () => { if (state.email) openAccount(); });
 window.addEventListener('online', () => { state.online = true; sync({ quiet: true }); });
 window.addEventListener('offline', () => { state.online = false; render(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden && navigator.onLine) sync({ quiet: true }); });

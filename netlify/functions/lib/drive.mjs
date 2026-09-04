@@ -131,3 +131,80 @@ export async function receiptBytes(fileId) {
   if (!res.ok) throw new Error(`Drive download: ${res.status}`);
   return res;
 }
+
+/* ---------------------------------------------------------- diagnostics ---
+   Receipt upload has four separate prerequisites and failing any of them
+   produces the same symptom: nothing arrives in Drive. This walks them in order
+   and reports the first that breaks, with the fix rather than the stack trace. */
+
+export async function diagnose(sql) {
+  const steps = [];
+  const add = (name, ok, detail) => { steps.push({ name, ok, detail }); return ok; };
+
+  const email = process.env.GOOGLE_SA_EMAIL;
+  const key = (process.env.GOOGLE_SA_PRIVATE_KEY || '').replace(/\\n/g, '\n');
+  const folder = process.env.DRIVE_ROOT_FOLDER_ID;
+
+  if (!add('GOOGLE_SA_EMAIL set', !!email,
+      email ? email : 'Missing. Copy client_email from the service account JSON.')) return steps;
+
+  if (!add('GOOGLE_SA_PRIVATE_KEY set', !!key,
+      key ? `${key.length} chars` : 'Missing. Copy private_key from the service account JSON.')) return steps;
+
+  if (!add('private key looks like PKCS#8',
+      key.includes('BEGIN PRIVATE KEY'),
+      key.includes('BEGIN PRIVATE KEY')
+        ? 'ok'
+        : 'Does not contain "BEGIN PRIVATE KEY". The \\n escapes were probably mangled on paste.')) return steps;
+
+  if (!add('DRIVE_ROOT_FOLDER_ID set', !!folder,
+      folder ? folder : 'Missing. Copy the id from the Shared Drive folder URL.')) return steps;
+
+  let token;
+  try {
+    token = await accessToken();
+    add('service account can get a token', true, 'ok');
+  } catch (err) {
+    return add('service account can get a token', false,
+      `${err.message}. Check the key is valid and the Drive API is enabled in this Google Cloud project.`), steps;
+  }
+
+  let meta;
+  try {
+    const res = await fetch(
+      `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(folder)}?supportsAllDrives=true&fields=id,name,mimeType,driveId`,
+      { headers: { authorization: `Bearer ${token}` } });
+    if (!res.ok) {
+      const body = await res.text();
+      return add('folder is reachable', false,
+        res.status === 404
+          ? `404. Either the id is wrong, or ${email} has not been added as a member of the Shared Drive.`
+          : `${res.status} ${body.slice(0, 200)}`), steps;
+    }
+    meta = await res.json();
+    add('folder is reachable', true, `${meta.name}${meta.driveId ? ' (Shared Drive)' : ' (My Drive)'}`);
+  } catch (err) {
+    return add('folder is reachable', false, err.message), steps;
+  }
+
+  // A service account has no storage quota of its own, so it cannot own files
+  // in a My Drive folder no matter what the sharing says.
+  add('folder is on a Shared Drive', !!meta.driveId,
+    meta.driveId ? 'ok' : 'This folder is in a personal My Drive. A service account has no storage quota, so uploads will fail with a quota error. Move it to a Shared Drive.');
+
+  try {
+    const probe = await driveFetch('/drive/v3/files?supportsAllDrives=true&fields=id', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: '.field-budget-write-test', parents: [folder] }),
+    });
+    await fetch(`https://www.googleapis.com/drive/v3/files/${probe.id}?supportsAllDrives=true`,
+      { method: 'DELETE', headers: { authorization: `Bearer ${token}` } });
+    add('can create and delete a file', true, 'ok');
+  } catch (err) {
+    add('can create and delete a file', false,
+      `${err.message}. ${email} probably needs Content manager rather than Viewer on the Shared Drive.`);
+  }
+
+  return steps;
+}

@@ -8,7 +8,7 @@ import {
   emailFromGoogleCredential, createMagicToken, consumeMagicToken,
   sendMagicLink, emailIsKnown, checkAccessCode,
 } from './lib/auth.mjs';
-import { ensureBudgetFolder, uploadReceipt, receiptBytes } from './lib/drive.mjs';
+import { ensureBudgetFolder, uploadReceipt, receiptBytes, diagnose } from './lib/drive.mjs';
 
 const MONEY_BUDGET = ['funded_base'];
 const MONEY_CAT = ['allocated'];
@@ -217,14 +217,26 @@ async function putReceipt(request, email, entryId) {
   const rows = await sql`select * from budgets where id = ${budgetId}`;
   if (!rows.length) return json({ error: 'No such budget' }, 404, request);
 
-  const folderId = await ensureBudgetFolder(sql, rows[0]);
+  let folderId;
+  try {
+    folderId = await ensureBudgetFolder(sql, rows[0]);
+  } catch (err) {
+    console.error('receipt folder:', err);
+    return json({ error: `Drive folder unavailable: ${err.message}` }, 502, request);
+  }
   const stamp = new Date().toISOString().slice(0, 10);
-  const uploaded = await uploadReceipt({
-    folderId,
-    name: `${stamp}-${email.split('@')[0]}-${entryId.slice(0, 8)}.jpg`,
-    contentType: request.headers.get('content-type') || 'image/jpeg',
-    bytes,
-  });
+  let uploaded;
+  try {
+    uploaded = await uploadReceipt({
+      folderId,
+      name: `${stamp}-${email.split('@')[0]}-${entryId.slice(0, 8)}.jpg`,
+      contentType: request.headers.get('content-type') || 'image/jpeg',
+      bytes,
+    });
+  } catch (err) {
+    console.error('receipt upload:', err);
+    return json({ error: `Drive upload failed: ${err.message}` }, 502, request);
+  }
 
   // The entry may not have synced yet; when it does, sync carries these fields.
   await sql`
@@ -279,6 +291,14 @@ export default async function handler(request) {
 
     if (path === '/api/me') return await getMe(request, email);
     if (path === '/api/sync' && request.method === 'POST') return await postSync(request, email);
+
+    // Walks the Drive prerequisites and reports the first that fails. Admin only
+    // because the output names env vars and the service account address.
+    if (path === '/api/receipts/_diagnose') {
+      if (!adminEmails().includes(email)) return json({ error: 'Not an admin' }, 403, request);
+      const steps = await diagnose();
+      return json({ ok: steps.every((s) => s.ok), steps }, 200, request);
+    }
 
     const put = path.match(/^\/api\/receipts\/([^/]+)$/);
     if (put && request.method === 'PUT') return await putReceipt(request, email, put[1]);
