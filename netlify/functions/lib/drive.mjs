@@ -219,10 +219,22 @@ export async function diagnose(sql) {
       { headers: { authorization: `Bearer ${token}` } });
     if (!res.ok) {
       const body = await res.text();
-      return add('folder is reachable', false,
-        res.status === 404
-          ? `404. Either the id is wrong, or ${email} has not been added as a member of the Shared Drive.`
-          : `${res.status} ${body.slice(0, 200)}`), steps;
+      // Google returns 403 both for "API not enabled" and for "no permission",
+      // and the raw body buries which one it is behind 300 characters of prose.
+      let why;
+      if (res.status === 404) {
+        why = `404. Either the id is wrong, or ${email} has not been added as a member of the Shared Drive.`;
+      } else if (/has not been used in project|is disabled/.test(body)) {
+        const project = (body.match(/project (\d+)/) || [])[1];
+        why = `The Google Drive API is not enabled${project ? ` in project ${project}` : ''}. `
+            + `Enable it at https://console.cloud.google.com/apis/library/drive.googleapis.com`
+            + `${project ? `?project=${project}` : ''} and retry in a minute.`;
+      } else if (res.status === 403) {
+        why = `403. ${email} can reach the API but not this folder — add it as a Content manager on the Shared Drive.`;
+      } else {
+        why = `${res.status} ${body.slice(0, 200)}`;
+      }
+      return add('folder is reachable', false, why), steps;
     }
     meta = await res.json();
     add('folder is reachable', true, `${meta.name}${meta.driveId ? ' (Shared Drive)' : ' (My Drive)'}`);
