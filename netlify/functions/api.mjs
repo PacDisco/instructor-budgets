@@ -206,9 +206,17 @@ async function postSync(request, email) {
 // The instructor's own description makes these findable in Drive months later,
 // which a UUID does not. The entry hasn't synced yet when the photo arrives, so
 // the note is sent by the client rather than read from the database.
-function receiptFilename(noteHeader, email, entryId) {
+const EXT_BY_TYPE = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp',
+  'image/heic': 'heic', 'image/heif': 'heif', 'application/pdf': 'pdf',
+};
+
+function receiptFilename(noteHeader, email, entryId, contentType) {
   const stamp = new Date().toISOString().slice(0, 10);
   const short = entryId.slice(0, 8);
+  // A gallery pick can be HEIC or PNG; naming it .jpg would make it unopenable
+  // on some machines for no reason.
+  const ext = EXT_BY_TYPE[String(contentType || '').split(';')[0].trim()] || 'jpg';
   let note = '';
   if (noteHeader) {
     try {
@@ -225,8 +233,8 @@ function receiptFilename(noteHeader, email, entryId) {
     .slice(0, 110);
 
   return note
-    ? `${note} [${short}].jpg`
-    : `${stamp} - ${email.split('@')[0]} - ${short}.jpg`;
+    ? `${note} [${short}].${ext}`
+    : `${stamp} - ${email.split('@')[0]} - ${short}.${ext}`;
 }
 
 async function putReceipt(request, email, entryId) {
@@ -254,7 +262,8 @@ async function putReceipt(request, email, entryId) {
   try {
     uploaded = await uploadReceipt({
       folderId,
-      name: receiptFilename(request.headers.get('x-receipt-note'), email, entryId),
+      name: receiptFilename(request.headers.get('x-receipt-note'), email, entryId,
+                            request.headers.get('content-type')),
       contentType: request.headers.get('content-type') || 'image/jpeg',
       bytes,
     });

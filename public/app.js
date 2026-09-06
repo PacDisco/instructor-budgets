@@ -504,7 +504,14 @@ async function compress(file, max = RECEIPT_MAX_PX, quality = RECEIPT_QUALITY) {
   try {
     bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
   } catch {
-    bmp = await createImageBitmap(file);
+    try {
+      bmp = await createImageBitmap(file);
+    } catch {
+      // A gallery pick on iOS is often HEIC, which most browsers cannot decode.
+      // Uploading the original beats losing the receipt; it costs more bandwidth
+      // and Drive will still preview it.
+      return file;
+    }
   }
 
   // Already small and modest resolution: keep the original bytes rather than
@@ -571,9 +578,15 @@ function openSpend(categoryId, existing) {
       <label>Receipt</label>
       <div class="receipt">
         <img id="thumb" hidden alt="">
-        <button class="receipt-btn" type="button" id="snap">Take a photo</button>
+        <span class="receipt-actions">
+          <button class="receipt-btn" type="button" id="snap">Take a photo</button>
+          <button class="receipt-btn alt" type="button" id="pick">Choose from photos</button>
+        </span>
       </div>
-      <input id="file" type="file" accept="image/*" capture="environment" hidden>
+      <!-- Two inputs: an input carrying the capture attribute always opens the
+           camera, and the browser cannot be talked out of it at click time. -->
+      <input id="fileCam" type="file" accept="image/*" capture="environment" hidden>
+      <input id="filePick" type="file" accept="image/*" hidden>
       <p class="error" id="err" hidden></p>
       <button class="submit" type="button" id="save">${existing ? 'Save changes' : 'Save spend'}</button>
       <button class="ghost" type="button" id="cancel">Cancel</button>
@@ -647,15 +660,25 @@ function openSpend(categoryId, existing) {
     form.querySelectorAll('#method button').forEach((x) => x.setAttribute('aria-pressed', String(x === btn)));
   });
 
-  const file = form.querySelector('#file');
-  form.querySelector('#snap').addEventListener('click', () => file.click());
-  file.addEventListener('change', async () => {
-    if (!file.files[0]) return;
-    receiptBlob = await compress(file.files[0]);
+  const fileCam = form.querySelector('#fileCam');
+  const filePick = form.querySelector('#filePick');
+  form.querySelector('#snap').addEventListener('click', () => fileCam.click());
+  form.querySelector('#pick').addEventListener('click', () => filePick.click());
+
+  const useFile = async (input) => {
+    const chosen = input.files[0];
+    if (!chosen) return;
+    receiptBlob = await compress(chosen);
     const thumb = form.querySelector('#thumb');
-    thumb.src = URL.createObjectURL(receiptBlob); thumb.hidden = false;
-    form.querySelector('#snap').textContent = 'Retake photo';
-  });
+    try {
+      thumb.src = URL.createObjectURL(receiptBlob);
+      thumb.hidden = false;
+    } catch { /* a format the browser can't preview still uploads fine */ }
+    form.querySelector('#snap').textContent = 'Retake';
+    form.querySelector('#pick').textContent = 'Choose another';
+  };
+  fileCam.addEventListener('change', () => useFile(fileCam));
+  filePick.addEventListener('change', () => useFile(filePick));
 
   form.querySelector('#cancel').addEventListener('click', closeSheet);
   form.querySelector('#save').addEventListener('click', async () => {
@@ -729,7 +752,8 @@ function openSpend(categoryId, existing) {
     form.querySelectorAll('#method button').forEach((x) =>
       x.setAttribute('aria-pressed', String(x.dataset.v === method)));
     if (existing.receipt_file_id || existing.receipt_key) {
-      form.querySelector('#snap').textContent = 'Replace photo';
+      form.querySelector('#snap').textContent = 'Retake';
+      form.querySelector('#pick').textContent = 'Choose another';
     }
   }
   updateRate();

@@ -297,10 +297,13 @@ input[type="date"]::-webkit-calendar-picker-indicator { margin-left: 4px; }
   border-radius: var(--radius); padding: 12px; margin-top: 6px;
 }
 .receipt img { width: 54px; height: 54px; object-fit: cover; border-radius: 6px; }
+.receipt-actions { flex: 1; display: flex; flex-direction: column; align-items: flex-start; }
 .receipt-btn {
-  flex: 1; min-height: 44px; border: 0; background: none; font: inherit;
+  min-height: 40px; border: 0; background: none; font: inherit; padding: 0;
   text-align: left; color: var(--topaz-dark); font-weight: 500; cursor: pointer;
 }
+.receipt-btn.alt { font-weight: 400; color: var(--muted); }
+.receipt-btn.alt:active { color: var(--topaz-dark); }
 
 .hint { font-size: 0.76rem; color: var(--muted); margin-top: 6px; }
 .hint strong { font-weight: 600; color: var(--ink-strong); }
