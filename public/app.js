@@ -6,7 +6,12 @@
 const API = (location.hostname === 'localhost' || location.hostname.endsWith('netlify.app'))
   ? '/api' : '/api';
 
-const MINOR = { PEN: 100, USD: 100, NZD: 100, EUR: 100 };
+// Most currencies have 100 minor units, but not all — VND, JPY and CLP have
+// none, so treating them as cents would overstate every figure a hundredfold.
+// A few Gulf currencies use 1000.
+const ZERO_DECIMAL = new Set(['BIF','CLP','DJF','GNF','ISK','JPY','KMF','KRW',
+  'PYG','RWF','UGX','VND','VUV','XAF','XOF','XPF']);
+const THREE_DECIMAL = new Set(['BHD','IQD','JOD','KWD','LYD','OMR','TND']);
 const state = { email: null, budgets: [], budgetId: null, entries: [], online: navigator.onLine };
 
 /* ---------------- storage ---------------- */
@@ -58,15 +63,24 @@ const getReceipt = (k) => tx('receipts', 'readonly', (s) => s.get(k));
 
 /* ---------------- money ---------------- */
 
-const minor = (cur) => MINOR[cur] || 100;
+const decimals = (cur) => ZERO_DECIMAL.has(cur) ? 0 : (THREE_DECIMAL.has(cur) ? 3 : 2);
+const minor = (cur) => Math.pow(10, decimals(cur));
 const toMinor = (v, cur) => Math.round(Number(v) * minor(cur));
 
 function fmt(amountMinor, cur, { sign = false } = {}) {
   const v = amountMinor / minor(cur);
-  const s = new Intl.NumberFormat('en-NZ', {
-    style: 'currency', currency: cur, currencyDisplay: 'code',
-    minimumFractionDigits: 2, maximumFractionDigits: 2,
-  }).format(Math.abs(v));
+  const d = decimals(cur);
+  let s;
+  try {
+    s = new Intl.NumberFormat('en-NZ', {
+      style: 'currency', currency: cur, currencyDisplay: 'code',
+      minimumFractionDigits: d, maximumFractionDigits: d,
+    }).format(Math.abs(v));
+  } catch {
+    // Intl throws on a code it doesn't recognise; fall back rather than blanking
+    // the whole screen over an unusual currency.
+    s = `${cur} ${Math.abs(v).toFixed(d)}`;
+  }
   const prefix = amountMinor < 0 ? '−' : (sign ? '+' : '');
   return prefix + s;
 }
@@ -301,7 +315,7 @@ function receiptNote(e) {
     e.spent_on,
     cat ? cat.name : null,
     e.description || null,
-    `${e.currency} ${(e.amount / minor(e.currency)).toFixed(2)}`,
+    `${e.currency} ${(e.amount / minor(e.currency)).toFixed(decimals(e.currency))}`,
     (e.email || '').split('@')[0] || null,
   ].filter(Boolean);
   try {
@@ -527,7 +541,7 @@ function openSpend(categoryId, existing) {
     <div>
       <h2>${existing ? 'Change spend' : 'Log spend'}</h2>
       <label for="amt">Amount</label>
-      <input class="amount-input num" id="amt" type="number" inputmode="decimal" step="0.01" placeholder="0.00">
+      <input class="amount-input num" id="amt" type="number" inputmode="decimal" step="any" placeholder="0.00">
       <div class="field-row">
         <div>
           <label for="cur">Currency</label>
@@ -584,7 +598,7 @@ function openSpend(categoryId, existing) {
     // Put the converted figure on the button. A wrong rate then has to get past
     // your eyes on the way to being saved, instead of failing silently.
     btn.textContent = foreign && conv > 0
-      ? `Save ${conv.toFixed(2)} ${(leg && leg.currency) || ''}`
+      ? `Save ${conv.toFixed(decimals((leg && leg.currency) || 'USD'))} ${(leg && leg.currency) || ''}`
       : (existing ? 'Save changes' : 'Save spend');
   }
   function updateRate() {
@@ -605,7 +619,7 @@ function openSpend(categoryId, existing) {
     const a = Number(amt.value) || 0;
     const conv = a * (Number(rate.value) || 0);
     rateHint.innerHTML = conv > 0
-      ? `Counts against ${leg.name} as <strong>${conv.toFixed(2)} ${legCur}</strong>. Card rates differ from this; reconciliation will catch it.`
+      ? `Counts against ${leg.name} as <strong>${conv.toFixed(decimals(legCur))} ${legCur}</strong>. Card rates differ from this; reconciliation will catch it.`
       : `Enter the rate in ${legCur} per 1 ${cur.value}.`;
     saveLabel(conv, true);
   }
@@ -705,7 +719,7 @@ function openSpend(categoryId, existing) {
   });
 
   if (existing) {
-    amt.value = (existing.amount / minor(existing.currency)).toFixed(2);
+    amt.value = (existing.amount / minor(existing.currency)).toFixed(decimals(existing.currency));
     cur.value = existing.currency;
     rate.value = existing.rate;
     rate.dataset.forCur = existing.currency;
