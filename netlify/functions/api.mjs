@@ -14,6 +14,15 @@ const MONEY_BUDGET = ['funded_base'];
 const MONEY_CAT = ['allocated'];
 const MONEY_ENTRY = ['amount', 'budget_amount', 'actual_base'];
 
+// Postgres date -> JS Date -> "2026-09-09T00:00:00.000Z". Everything downstream
+// wants a plain calendar day: an <input type="date"> rejects the timestamp form
+// and blanks itself, which then saves an empty date and fails the next insert.
+const asDay = (v) => {
+  if (!v) return null;
+  if (v instanceof Date) return v.toISOString().slice(0, 10);
+  return String(v).slice(0, 10);
+};
+
 function apiPath(request) {
   let p = new URL(request.url).pathname;
   // Depending on how the rewrite resolves, the function may see either form.
@@ -148,7 +157,11 @@ async function getMe(request, email) {
     email,
     is_admin: isAdmin,
     budgets: shaped,
-    entries: entries.map((e) => ({ ...coerceMoney(e, MONEY_ENTRY), rate: Number(e.rate) })),
+    entries: entries.map((e) => ({
+      ...coerceMoney(e, MONEY_ENTRY),
+      rate: Number(e.rate),
+      spent_on: asDay(e.spent_on),
+    })),
     server_time: new Date().toISOString(),
   }, 200, request);
 }
@@ -170,6 +183,13 @@ async function postSync(request, email) {
       rejected.push({ id: e.id, reason: 'not_assigned' });
       continue;
     }
+    // A blank or malformed date used to reach Postgres and blow up with an
+    // opaque cast error, leaving the entry stuck pending forever.
+    const day = asDay(e.spent_on);
+    if (!day || !/^\d{4}-\d{2}-\d{2}$/.test(day)) {
+      rejected.push({ id: e.id, reason: 'bad_date' });
+      continue;
+    }
     // A correction must point at an existing entry in the same budget. Without
     // this a malformed or malicious client could void a row in someone else's.
     if (e.entry_type === 'correction') {
@@ -187,7 +207,7 @@ async function postSync(request, email) {
           receipt_file_id, receipt_link, corrects_id, created_at
         ) values (
           ${e.id}, ${e.budget_id}, ${e.category_id ?? null}, ${email}, ${e.entry_type},
-          ${e.group_id ?? null}, ${e.spent_on}, ${Math.round(e.amount)}, ${e.currency},
+          ${e.group_id ?? null}, ${day}, ${Math.round(e.amount)}, ${e.currency},
           ${e.rate ?? 1}, ${Math.round(e.budget_amount)}, ${e.payment_method ?? 'cash'},
           ${e.description ?? ''}, ${e.receipt_file_id ?? null}, ${e.receipt_link ?? null},
           ${e.corrects_id ?? null}, ${e.created_at}

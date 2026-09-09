@@ -298,12 +298,25 @@ async function pushOutbox() {
     body: JSON.stringify({ entries: payload }),
   });
   if (!res.ok) throw new Error(`sync ${res.status}`);
-  const { accepted = [] } = await res.json();
+  const { accepted = [], rejected = [] } = await res.json();
   for (const id of accepted) {
     const e = pending.find((x) => x.id === id);
-    if (e) await putEntry({ ...e, pending: 0 });
+    if (e) await putEntry({ ...e, pending: 0, sync_error: undefined });
   }
-  return { pushed: accepted.length };
+
+  const REASONS = {
+    bad_date: 'The date is missing or invalid — open the entry and set it again.',
+    not_assigned: 'You are no longer assigned to that budget.',
+  };
+  for (const r of rejected) {
+    const e = pending.find((x) => x.id === r.id);
+    if (!e) continue;
+    // Record it rather than retrying forever with nothing on screen.
+    await putEntry({ ...e, sync_error: REASONS[r.reason] || r.reason });
+    console.error('entry rejected', r);
+  }
+
+  return { pushed: accepted.length, rejected: rejected.length };
 }
 
 // Base64 so accented descriptions survive — header values must be ASCII, and
@@ -312,7 +325,7 @@ function receiptNote(e) {
   const b = state.budgets.find((x) => x.id === e.budget_id);
   const cat = b && b.categories.find((c) => c.id === e.category_id);
   const parts = [
-    e.spent_on,
+    day(e.spent_on),
     cat ? cat.name : null,
     e.description || null,
     `${e.currency} ${(e.amount / minor(e.currency)).toFixed(decimals(e.currency))}`,
@@ -363,9 +376,13 @@ function render() {
     ? `${[...new Set(legList)].join(', ') || 'no legs'} · ${state.email || ''}`
     : (state.email || '');
 
+  const syncErrors = state.entries.filter((e) => e.sync_error && e.pending === 1).length;
   const receiptErrors = state.entries.filter((e) => e.receipt_error && !e.receipt_uploaded).length;
   const chip = document.getElementById('syncChip');
-  if (receiptErrors) {
+  if (syncErrors) {
+    chip.textContent = `${syncErrors} won't sync`;
+    chip.dataset.state = 'offline';
+  } else if (receiptErrors) {
     chip.textContent = `${receiptErrors} photo${receiptErrors === 1 ? '' : 's'} stuck`;
     chip.dataset.state = 'offline';
   } else if (pendingCount) { chip.textContent = `${pendingCount} to sync`; chip.dataset.state = 'pending'; }
@@ -480,6 +497,9 @@ function toast(msg) {
 }
 
 const today = () => new Date().toISOString().slice(0, 10);
+// Entries stored before the API started normalising this carry a full
+// timestamp. Everything that renders or prefills a date goes through here.
+const day = (v) => (v ? String(v).slice(0, 10) : '');
 const uuid = () => (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`);
 
 /* Shrink before queueing: a 4MB phone photo will never clear a 3G uplink in
@@ -714,7 +734,9 @@ function openSpend(categoryId, existing) {
     const row = {
       id, budget_id: b.id, category_id: form.querySelector('#cat').value,
       email: state.email, entry_type: 'expense', group_id: groupId,
-      spent_on: form.querySelector('#date').value,
+      // Never send an empty date: it fails the insert and the entry sticks
+      // pending with nothing to explain it.
+      spent_on: day(form.querySelector('#date').value) || today(),
       amount: amountMinor, currency, rate: r,
       budget_amount: Math.round(amountMinor * r * (minor(legCur) / minor(currency))),
       payment_method: method,
@@ -748,7 +770,7 @@ function openSpend(categoryId, existing) {
     rate.dataset.forCur = existing.currency;
     wasForeign = existing.currency !== (leg && leg.currency);
     form.querySelector('#desc').value = existing.description || '';
-    form.querySelector('#date').value = existing.spent_on;
+    form.querySelector('#date').value = day(existing.spent_on);
     form.querySelectorAll('#method button').forEach((x) =>
       x.setAttribute('aria-pressed', String(x.dataset.v === method)));
     if (existing.receipt_file_id || existing.receipt_key) {
@@ -825,7 +847,8 @@ function openCash() {
     const cerr = form.querySelector('#cerr');
     const desc = form.querySelector('#cdesc').value.trim();
     const date = form.querySelector('#cdate').value;
-    const base = { budget_id: b.id, category_id: null, email: state.email, spent_on: date,
+    const base = { budget_id: b.id, category_id: null, email: state.email,
+                   spent_on: day(date) || today(),
                    payment_method: 'cash', description: desc, receipt_key: null,
                    corrects_id: null, created_at: new Date().toISOString(), pending: 1 };
 
@@ -872,6 +895,12 @@ function openAccount() {
       ${pending ? `<p class="error">Sync before signing out, or those ${pending} entr${
         pending === 1 ? 'y' : 'ies'} stay on this device and nobody else can see them.</p>` : ''}
       ${(() => {
+        const refused = state.entries.filter((e) => e.sync_error && e.pending === 1);
+        if (refused.length) {
+          return `<p class="error">${refused.length} entr${refused.length === 1 ? 'y was' : 'ies were'}
+            refused by the server. Open History and fix ${refused.length === 1 ? 'it' : 'them'}.<br>
+            <span class="hint">${refused[0].sync_error}</span></p>`;
+        }
         const stuck = state.entries.filter((e) => e.receipt_error && !e.receipt_uploaded);
         if (!stuck.length) return '';
         return `<p class="error">${stuck.length} receipt photo${stuck.length === 1 ? '' : 's'} could not upload.
@@ -925,7 +954,7 @@ function openHistory() {
     // they void is shown struck through instead, which reads as "this was fixed"
     // rather than two rows that look like double spending.
     .filter((e) => e.entry_type !== 'correction')
-    .slice().sort((a, c) => (c.spent_on + c.created_at).localeCompare(a.spent_on + a.created_at))
+    .slice().sort((a, c) => (day(c.spent_on) + c.created_at).localeCompare(day(a.spent_on) + a.created_at))
     .slice(0, 80);
 
   const wrap = el('<div><h2>Recent entries</h2></div>');
@@ -943,8 +972,9 @@ function openHistory() {
         <span class="entry-main">
           <span class="entry-desc">${e.description || label}</span>
           <span class="entry-meta"><span class="dot ${e.pending ? 'pending' : ''}"></span>${
-            e.spent_on} · ${entryLeg ? `${entryLeg.name} · ` : ''}${label}${
-            e.payment_method === 'card' ? ' · card' : ''}${isVoid ? ' · corrected' : ''}</span>
+            day(e.spent_on) || 'no date'} · ${entryLeg ? `${entryLeg.name} · ` : ''}${label}${
+            e.payment_method === 'card' ? ' · card' : ''}${isVoid ? ' · corrected' : ''}${
+            e.sync_error ? ` · <strong>won't sync</strong>` : ''}</span>
         </span>
         <span class="entry-amt num">${fmt(e.amount, e.currency, { sign: e.entry_type !== 'expense' })}</span>
       </button>`);
@@ -980,12 +1010,13 @@ function openEntry(e) {
     <div>
       <h2>${e.description || (cat ? cat.name : 'Entry')}</h2>
       <p class="hint">
-        ${e.spent_on} · ${entryLeg ? `${entryLeg.name} · ` : ''}${cat ? cat.name : e.entry_type}
+        ${day(e.spent_on)} · ${entryLeg ? `${entryLeg.name} · ` : ''}${cat ? cat.name : e.entry_type}
         · ${e.payment_method}<br>
         <strong>${fmt(e.amount, e.currency)}</strong>${
           e.currency !== (entryLeg && entryLeg.currency) && entryLeg
             ? ` at ${e.rate} = ${fmt(e.budget_amount, entryLeg.currency)}` : ''}
       </p>
+      ${e.sync_error ? `<p class="error">This entry was refused by the server: ${e.sync_error}</p>` : ''}
       <p class="hint">${synced
         ? 'Already synced. Changes are recorded as a correction, so the original stays in the record.'
         : 'Not synced yet, so this is edited in place.'}</p>
