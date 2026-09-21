@@ -132,16 +132,55 @@ function categoryRows() {
   return out;
 }
 
+// Category lookups happen per entry per keystroke once history is searchable,
+// so the id map is built once per budget rather than on every call. Invalidated
+// wherever state.budgets is replaced.
+let catIndex = { budgetId: null, map: null };
+function invalidateCatIndex() { catIndex = { budgetId: null, map: null }; }
+function catById() {
+  const b = budget();
+  if (!b) return {};
+  if (catIndex.budgetId !== b.id || !catIndex.map) {
+    catIndex = { budgetId: b.id, map: Object.fromEntries(b.categories.map((c) => [c.id, c])) };
+  }
+  return catIndex.map;
+}
+
 // Which leg a category belongs to — the conversion target for anything logged
 // against it, and where its rates live.
 function legOf(categoryId) {
   const b = budget();
   if (!b) return null;
-  const byId = Object.fromEntries(b.categories.map((c) => [c.id, c]));
+  const byId = catById();
   let node = byId[categoryId];
   let guard = 0;
   while (node && node.parent_id && guard++ < 5) node = byId[node.parent_id];
   return node || null;
+}
+
+// A category plus everything under it. A filter on a roll-up has to catch spend
+// logged against its subcategories, or the parent row and its history disagree.
+function descendantIds(categoryId) {
+  const b = budget();
+  const out = new Set([categoryId]);
+  if (!b) return out;
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const c of b.categories) {
+      if (c.parent_id && out.has(c.parent_id) && !out.has(c.id)) { out.add(c.id); grew = true; }
+    }
+  }
+  return out;
+}
+
+// How many live entries sit under a category, shown on the gauge so it reads as
+// something you can open rather than only a number.
+function entryCount(categoryId) {
+  const ids = descendantIds(categoryId);
+  const voided = voidedIds();
+  return budgetEntries().filter((e) =>
+    e.entry_type === 'expense' && e.category_id && ids.has(e.category_id) && !voided.has(e.id)).length;
 }
 
 // The first leaf, used when the dock's "Log spend" button opens the form with
@@ -243,6 +282,7 @@ async function refreshFromServer() {
   const data = await res.json();
   state.email = data.email;
   state.budgets = data.budgets || [];
+  invalidateCatIndex();
   await putMeta('budgets', state.budgets);
   await putMeta('email', state.email);
   for (const e of data.entries || []) await putEntry({ ...e, pending: 0 });
@@ -364,6 +404,12 @@ const $ = (id) => document.getElementById(id);
 const view = document.getElementById('view');
 const el = (html) => { const t = document.createElement('template'); t.innerHTML = html.trim(); return t.content.firstElementChild; };
 
+// Descriptions are instructor free text and go into innerHTML. Escaping them is
+// not optional once they are also being highlighted and pushed through filters.
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({
+  '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+}[c]));
+
 function render() {
   if (!Array.isArray(state.budgets)) state.budgets = [];
   if (!Array.isArray(state.entries)) state.entries = [];
@@ -392,7 +438,7 @@ function render() {
   view.innerHTML = '';
 
   if (!b) {
-    view.append(el(`<div class="empty">No budgets are assigned to this address yet. Ask your programme director to add <strong>${state.email || 'your email'}</strong> to the programme budget.</div>`));
+    view.append(el(`<div class="empty">No budgets are assigned to this address yet. Ask your programme director to add <strong>${esc(state.email || 'your email')}</strong> to the programme budget.</div>`));
     return;
   }
 
@@ -432,24 +478,21 @@ function render() {
     const list = el('<div class="gauge-list"></div>');
     const walk = (n) => {
       const leaf = !n.kids.length;
+      const count = entryCount(n.id);
       const g = el(`
         <button class="gauge d${n.depth} ${n.over ? 'over' : ''}" type="button" ${leaf ? '' : 'data-parent="1"'}>
           <span class="gauge-top">
-            <span class="gauge-name">${n.name}</span>
+            <span class="gauge-name">${esc(n.name)}</span>
             <span class="gauge-left num">${fmt(n.remaining, n.currency)}</span>
           </span>
-          <span class="gauge-meta num">${fmt(n.spent, n.currency)} of ${fmt(n.allocated, n.currency)} spent</span>
+          <span class="gauge-meta num">${fmt(n.spent, n.currency)} of ${fmt(n.allocated, n.currency)} spent${
+            count ? ` · ${count} entr${count === 1 ? 'y' : 'ies'}` : ''}</span>
           <span class="gauge-track"><span class="gauge-fill" style="width:${n.pct}%"></span></span>
         </button>`);
-      // Only leaves can be logged against; tapping a roll-up opens the form on
-      // its first leaf rather than doing nothing.
-      g.addEventListener('click', () => {
-        if (leaf) return openSpend(n.id);
-        const firstLeaf = (function dig(x) {
-          return x.kids.length ? dig(x.kids[0]) : x;
-        })(n);
-        openSpend(firstLeaf.id);
-      });
+      // Tapping a category opens its own history rather than the spend form.
+      // Logging is still one tap from the dock, and this is where an instructor
+      // goes to answer "did I already put the Cusco bus in?".
+      g.addEventListener('click', () => openCategory(n));
       list.append(g);
       n.kids.forEach(walk);
     };
@@ -946,47 +989,264 @@ async function signOut() {
   location.reload();
 }
 
-function openHistory() {
+/* ---------------- browsing entries ----------------
+   One panel serves two entrances. The dock's History button opens it across the
+   whole budget; tapping a category gauge opens it scoped to that category and
+   everything under it. Both get the same search box, because an instructor
+   looking for "did I already log the Cusco bus" does not care which door they
+   came through. */
+
+const TYPE_LABEL = {
+  expense: 'Spend', withdrawal: 'Cash withdrawn', exchange: 'Exchange',
+  transfer: 'Transfer', correction: 'Correction',
+};
+const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july',
+  'august', 'september', 'october', 'november', 'december'];
+
+const PAGE = 40;
+const personOf = (e) => (e.email || '').split('@')[0] || 'someone';
+const isMine = (e) => !!state.email
+  && String(e.email || '').toLowerCase() === String(state.email).toLowerCase();
+
+// Filters survive a trip into an entry and back, so "Back" returns to the list
+// you were actually looking at rather than resetting it.
+const historyState = { q: '', mine: false, catId: '', limit: PAGE };
+const catStates = new Map();
+
+// Everything a row could plausibly be searched by, in one lowercased string.
+// Amounts go in twice — "355" and "355.00" — because nobody types the cents.
+// Month names go in so "feb" finds February without knowing the date format.
+function haystack(e) {
+  const cat = catById()[e.category_id];
+  const leg = e.category_id ? legOf(e.category_id) : null;
+  const d = decimals(e.currency);
+  const plain = Math.abs(e.amount / minor(e.currency));
+  const iso = day(e.spent_on);
+  const m = Number(iso.slice(5, 7));
+  return [
+    e.description,
+    cat ? cat.name : '',
+    leg && leg !== cat ? leg.name : '',
+    TYPE_LABEL[e.entry_type] || e.entry_type,
+    e.payment_method,
+    e.currency,
+    plain.toFixed(d),
+    String(Math.round(plain)),
+    iso,
+    m >= 1 && m <= 12 ? MONTHS[m - 1] : '',
+    personOf(e),
+    isMine(e) ? 'me mine you' : '',
+  ].join(' ').toLowerCase();
+}
+
+const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Split on the capture group so the alternating halves are match / not-match,
+// and escape both. Escaping first and highlighting after would let a search for
+// "amp" light up the middle of an entity.
+function highlight(text, tokens) {
+  const s = String(text ?? '');
+  if (!tokens.length) return esc(s);
+  const re = new RegExp(`(${tokens.map(reEsc).sort((a, z) => z.length - a.length).join('|')})`, 'gi');
+  return s.split(re).map((part, i) => (i % 2 ? `<mark>${esc(part)}</mark>` : esc(part))).join('');
+}
+
+// True once a budget runs more than one leg, e.g. Peru and Ecuador. With one
+// leg its name is on every row and tells you nothing.
+function multiLeg() {
   const b = budget();
-  const voided = voidedIds();
-  const rows = budgetEntries()
-    // Corrections are bookkeeping, not events an instructor logged. The entry
-    // they void is shown struck through instead, which reads as "this was fixed"
-    // rather than two rows that look like double spending.
-    .filter((e) => e.entry_type !== 'correction')
-    .slice().sort((a, c) => (day(c.spent_on) + c.created_at).localeCompare(day(a.spent_on) + a.created_at))
-    .slice(0, 80);
+  return !!b && b.categories.filter((c) => !c.parent_id).length > 1;
+}
 
-  const wrap = el('<div><h2>Recent entries</h2></div>');
-  if (!rows.length) wrap.append(el('<div class="empty">Nothing logged yet.</div>'));
+function entryRow(e, { voided, tokens, back }) {
+  const cat = catById()[e.category_id];
+  const entryLeg = multiLeg() && e.category_id ? legOf(e.category_id) : null;
+  const label = e.entry_type === 'expense' ? (cat ? cat.name : 'Spend')
+    : (TYPE_LABEL[e.entry_type] || e.entry_type);
+  const isVoid = voided.has(e.id);
+  const who = isMine(e) ? 'you' : personOf(e);
 
-  for (const e of rows) {
-    const cat = b.categories.find((c) => c.id === e.category_id);
-    const entryLeg = e.category_id ? legOf(e.category_id) : null;
-    const label = e.entry_type === 'expense' ? (cat ? cat.name : 'Spend')
-      : e.entry_type === 'withdrawal' ? 'Cash withdrawn' : 'Exchange';
-    const isVoid = voided.has(e.id);
+  const meta = [
+    day(e.spent_on) || 'no date',
+    entryLeg && entryLeg !== cat ? entryLeg.name : null,
+    label,
+    e.payment_method === 'card' ? 'card' : null,
+    who,
+    isVoid ? 'corrected' : null,
+  ].filter(Boolean).map((x) => highlight(x, tokens)).join(' · ');
 
-    const row = el(`
-      <button class="entry ${isVoid ? 'void' : ''}" type="button">
-        <span class="entry-main">
-          <span class="entry-desc">${e.description || label}</span>
-          <span class="entry-meta"><span class="dot ${e.pending ? 'pending' : ''}"></span>${
-            day(e.spent_on) || 'no date'} · ${entryLeg ? `${entryLeg.name} · ` : ''}${label}${
-            e.payment_method === 'card' ? ' · card' : ''}${isVoid ? ' · corrected' : ''}${
-            e.sync_error ? ` · <strong>won't sync</strong>` : ''}</span>
-        </span>
-        <span class="entry-amt num">${fmt(e.amount, e.currency, { sign: e.entry_type !== 'expense' })}</span>
-      </button>`);
-    if (!isVoid) row.addEventListener('click', () => openEntry(e));
-    wrap.append(row);
+  const row = el(`
+    <button class="entry ${isVoid ? 'void' : ''} ${isMine(e) ? 'mine' : ''}" type="button">
+      <span class="entry-main">
+        <span class="entry-desc">${highlight(e.description || label, tokens)}</span>
+        <span class="entry-meta"><span class="dot ${e.pending ? 'pending' : ''}"></span>${meta}${
+          e.sync_error ? ` · <strong>won't sync</strong>` : ''}</span>
+      </span>
+      <span class="entry-amt num">${fmt(e.amount, e.currency, { sign: e.entry_type !== 'expense' })}</span>
+    </button>`);
+  if (!isVoid) row.addEventListener('click', () => openEntry(e, back));
+  return row;
+}
+
+function filterCatOptions(selected) {
+  const NB = ' ';
+  return [`<option value="" ${selected ? '' : 'selected'}>All categories</option>`]
+    .concat(categoryRows().map((r) =>
+      `<option value="${esc(r.id)}" ${r.id === selected ? 'selected' : ''}>${
+        NB.repeat(Math.max(0, (r.depth - 1) * 2))}${esc(r.name)}</option>`))
+    .join('');
+}
+
+function openEntries(opts = {}) {
+  const b = budget();
+  if (!b) return;
+  const node = opts.node || null;
+
+  let st;
+  if (node) {
+    if (!catStates.has(node.id) || opts.fresh) {
+      catStates.set(node.id, { q: '', mine: false, catId: '', limit: PAGE });
+    }
+    st = catStates.get(node.id);
+  } else {
+    st = historyState;
+    if (opts.fresh) Object.assign(st, { q: '', mine: false, catId: '', limit: PAGE });
   }
 
-  wrap.append(el('<p class="hint">Tap an entry to change or remove it.</p>'));
-  wrap.append(el('<button class="ghost" type="button" id="hclose">Close</button>'));
-  wrap.querySelector('#hclose').addEventListener('click', closeSheet);
+  const scope = node ? descendantIds(node.id) : null;
+  // Re-resolve the node on the way back in: a spend logged from inside this
+  // sheet has to move the gauge at the top of it.
+  const reopen = () => openEntries({ node: node ? nodeById(node.id) : null });
+
+  const wrap = el(`
+    <div>
+      <h2>${node ? esc(node.name) : 'History'}</h2>
+      ${node ? `
+        <div class="cat-summary ${node.over ? 'over' : ''}">
+          <span class="cat-figs">
+            <span class="cat-left num">${fmt(node.remaining, node.currency)} left</span>
+            <span class="cat-of num">${fmt(node.spent, node.currency)} of ${fmt(node.allocated, node.currency)}</span>
+          </span>
+          <span class="gauge-track"><span class="gauge-fill" style="width:${node.pct}%"></span></span>
+        </div>
+        <button class="submit" type="button" id="elog">Log spend here</button>` : ''}
+      <label for="eq" class="sr-only">Search entries</label>
+      <input id="eq" class="search" type="search" autocomplete="off" enterkeyhint="search"
+             placeholder="Search — lunch, taxi, 355, feb, katie" value="${esc(st.q)}">
+      <div class="filters">
+        ${node ? '' : `<select id="ecat" aria-label="Filter by category">${filterCatOptions(st.catId)}</select>`}
+        <div class="seg small" id="ewho" role="group" aria-label="Whose entries">
+          <button type="button" data-v="all" aria-pressed="${!st.mine}">Everyone</button>
+          <button type="button" data-v="mine" aria-pressed="${st.mine}">Mine</button>
+        </div>
+      </div>
+      <p class="result-count" id="ecount"></p>
+      <div id="elist"></div>
+      <button class="ghost" type="button" id="emore" hidden>Show more</button>
+      <p class="hint" id="ehint">Tap an entry to change or remove it.</p>
+      <button class="ghost" type="button" id="eclose">Close</button>
+    </div>`);
+
+  const list = wrap.querySelector('#elist');
+  const count = wrap.querySelector('#ecount');
+  const more = wrap.querySelector('#emore');
+  const hint = wrap.querySelector('#ehint');
+  const q = wrap.querySelector('#eq');
+
+  function draw() {
+    const voided = voidedIds();
+    const tokens = st.q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+    // A filter on a roll-up has to include its subcategories, or the parent
+    // gauge and the list underneath it would disagree.
+    const catFilter = scope || (st.catId ? descendantIds(st.catId) : null);
+
+    const rows = budgetEntries()
+      // Corrections are bookkeeping, not events an instructor logged. The entry
+      // they void is shown struck through instead, which reads as "this was
+      // fixed" rather than two rows that look like double spending.
+      .filter((e) => e.entry_type !== 'correction')
+      .filter((e) => !catFilter || (e.category_id && catFilter.has(e.category_id)))
+      .filter((e) => !st.mine || isMine(e))
+      .filter((e) => {
+        if (!tokens.length) return true;
+        const h = haystack(e);
+        return tokens.every((t) => h.includes(t));
+      })
+      .sort((a, c) => (day(c.spent_on) + c.created_at).localeCompare(day(a.spent_on) + a.created_at));
+
+    // A total is only honest when everything it covers shares a currency, which
+    // it won't on a Peru/Ecuador budget filtered to nothing in particular. It
+    // is labelled "spent" because the row count also includes cash movements,
+    // which are not spending.
+    const spend = rows.filter((e) => !voided.has(e.id) && e.entry_type === 'expense');
+    const curs = [...new Set(spend.map((e) => e.currency))];
+    const total = curs.length === 1 ? spend.reduce((n, e) => n + e.amount, 0) : null;
+
+    const shown = rows.slice(0, st.limit);
+    count.innerHTML = rows.length
+      ? `${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}${
+          total ? ` · <span class="num">${fmt(total, curs[0])}</span> spent` : ''}${
+          shown.length < rows.length ? ` · showing ${shown.length}` : ''}`
+      : '';
+
+    list.innerHTML = '';
+    if (!shown.length) {
+      const filtered = tokens.length || st.mine || st.catId;
+      list.append(el(`<div class="empty">${filtered
+        ? 'Nothing matches that. Try fewer words, or clear the filters.'
+        : (node ? 'Nothing logged against this category yet.' : 'Nothing logged yet.')}</div>`));
+    }
+    for (const e of shown) list.append(entryRow(e, { voided, tokens, back: reopen }));
+
+    more.hidden = shown.length >= rows.length;
+    more.textContent = `Show ${Math.min(PAGE, rows.length - shown.length)} more`;
+    hint.hidden = !shown.length;
+  }
+
+  let t;
+  q.addEventListener('input', () => {
+    st.q = q.value;
+    st.limit = PAGE;
+    // Re-filtering the whole ledger on every keystroke is cheap at programme
+    // scale, but a phone in the field is not a laptop.
+    clearTimeout(t);
+    t = setTimeout(draw, 90);
+  });
+  q.addEventListener('search', () => { st.q = q.value; st.limit = PAGE; draw(); });
+
+  const catSel = wrap.querySelector('#ecat');
+  if (catSel) catSel.addEventListener('change', () => { st.catId = catSel.value; st.limit = PAGE; draw(); });
+
+  wrap.querySelector('#ewho').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-v]');
+    if (!btn) return;
+    st.mine = btn.dataset.v === 'mine';
+    st.limit = PAGE;
+    wrap.querySelectorAll('#ewho button').forEach((x) => x.setAttribute('aria-pressed', String(x === btn)));
+    draw();
+  });
+
+  more.addEventListener('click', () => { st.limit += PAGE; draw(); });
+  wrap.querySelector('#eclose').addEventListener('click', closeSheet);
+
+  const log = wrap.querySelector('#elog');
+  if (log) {
+    // Only leaves can be logged against; a roll-up opens the form on its first
+    // leaf rather than doing nothing.
+    const leaf = (function dig(x) { return x.kids.length ? dig(x.kids[0]) : x; })(node);
+    log.addEventListener('click', () => openSpend(leaf.id));
+  }
+
+  draw();
   openSheet(wrap);
 }
+
+// Tree nodes carry computed balances, so they are snapshots. Anything that
+// reopens a category sheet re-resolves the node rather than reusing one.
+const nodeById = (id) => categoryRows().find((r) => r.id === id) || null;
+
+const openHistory = () => openEntries({ fresh: true });
+const openCategory = (node) => openEntries({ node: typeof node === 'string' ? nodeById(node) : node });
 
 /* ---------------- editing an entry ----------------
    Two paths, and which one applies depends on whether the entry has left the
@@ -1000,23 +1260,28 @@ function openHistory() {
    the original plus a fresh entry with the new values; a delete writes just the
    correction. Both carry a group_id so the pair can be read together. */
 
-function openEntry(e) {
+function openEntry(e, back) {
   const b = budget();
   const cat = b.categories.find((c) => c.id === e.category_id);
-  const entryLeg = e.category_id ? legOf(e.category_id) : null;
+  // The leg is what the entry was converted into, so the conversion line always
+  // needs it; the breadcrumb only shows it when there is more than one leg.
+  const leg = e.category_id ? legOf(e.category_id) : null;
+  const entryLeg = multiLeg() ? leg : null;
   const synced = e.pending !== 1;
+  const goBack = back || (() => openEntries({}));
 
   const wrap = el(`
     <div>
-      <h2>${e.description || (cat ? cat.name : 'Entry')}</h2>
+      <h2>${esc(e.description || (cat ? cat.name : 'Entry'))}</h2>
       <p class="hint">
-        ${day(e.spent_on)} · ${entryLeg ? `${entryLeg.name} · ` : ''}${cat ? cat.name : e.entry_type}
-        · ${e.payment_method}<br>
+        ${day(e.spent_on)} · ${entryLeg && entryLeg !== cat ? `${esc(entryLeg.name)} · ` : ''}${
+          esc(cat ? cat.name : e.entry_type)}
+        · ${esc(e.payment_method)} · logged by ${esc(isMine(e) ? 'you' : personOf(e))}<br>
         <strong>${fmt(e.amount, e.currency)}</strong>${
-          e.currency !== (entryLeg && entryLeg.currency) && entryLeg
-            ? ` at ${e.rate} = ${fmt(e.budget_amount, entryLeg.currency)}` : ''}
+          leg && e.currency !== leg.currency
+            ? ` at ${e.rate} = ${fmt(e.budget_amount, leg.currency)}` : ''}
       </p>
-      ${e.sync_error ? `<p class="error">This entry was refused by the server: ${e.sync_error}</p>` : ''}
+      ${e.sync_error ? `<p class="error">This entry was refused by the server: ${esc(e.sync_error)}</p>` : ''}
       <p class="hint">${synced
         ? 'Already synced. Changes are recorded as a correction, so the original stays in the record.'
         : 'Not synced yet, so this is edited in place.'}</p>
@@ -1025,7 +1290,7 @@ function openEntry(e) {
       <button class="ghost" type="button" id="eCancel">Back</button>
     </div>`);
 
-  wrap.querySelector('#eCancel').addEventListener('click', () => openHistory());
+  wrap.querySelector('#eCancel').addEventListener('click', goBack);
 
   wrap.querySelector('#eEdit').addEventListener('click', () => {
     if (e.entry_type !== 'expense') {
@@ -1256,6 +1521,7 @@ async function loadGoogle() {
 async function boot() {
   const cached = await getMeta('budgets');
   state.budgets = Array.isArray(cached) ? cached : [];
+  invalidateCatIndex();
   state.email = (await getMeta('email')) || null;
   state.entries = await allEntries();
   state.budgetId = (await getMeta('budgetId')) || state.budgets[0]?.id || null;
@@ -1278,22 +1544,65 @@ async function boot() {
    Only runs on localhost or with ?demo=1 — never in production, so nobody sees a
    phantom budget instead of the correct empty state. */
 async function seedDemo() {
-  state.email = state.email || 'instructor@pacificdiscovery.org';
+  state.email = state.email || 'katie@pacificdiscovery.org';
+  // Three levels, matching what the admin side actually writes: level 1 is a
+  // programme leg carrying the currency, levels 2 and 3 are categories and
+  // subcategories. The old flat seed predates that and rendered nothing.
+  const cat = (id, name, allocated, sort, parent_id = null) =>
+    ({ id, budget_id: 'bud_peru_2026', name, allocated, sort_order: sort, parent_id, rates: {} });
   state.budgets = [{
     id: 'bud_peru_2026', name: 'Peru — Feb 2026', currency: 'PEN',
     base_currency: 'NZD', default_rate: 3.34,
     categories: [
-      { id: 'cat_food', name: 'Food', allocated: 1448880 },
-      { id: 'cat_transport', name: 'Transport', allocated: 14000 },
-      { id: 'cat_gratuity', name: 'Gratuities', allocated: 150000 },
-      { id: 'cat_activity', name: 'Activities', allocated: 192970 },
-      { id: 'cat_misc', name: 'Misc', allocated: 50000 },
-      { id: 'cat_firstaid', name: 'First aid', allocated: 16800 },
+      { ...cat('leg_peru', 'Peru', 0, 1), currency: 'PEN', rates: { USD: 3.34, NZD: 2.02 } },
+      cat('cat_food', 'Food', 0, 1, 'leg_peru'),
+      cat('cat_food_group', 'Group meals', 1148880, 1, 'cat_food'),
+      cat('cat_food_staff', 'Staff meals', 300000, 2, 'cat_food'),
+      cat('cat_transport', 'Transport', 140000, 2, 'leg_peru'),
+      cat('cat_gratuity', 'Gratuities', 150000, 3, 'leg_peru'),
+      cat('cat_activity', 'Activities', 192970, 4, 'leg_peru'),
+      cat('cat_misc', 'Misc', 50000, 5, 'leg_peru'),
+      cat('cat_firstaid', 'First aid', 16800, 6, 'leg_peru'),
     ],
   }];
   state.budgetId = 'bud_peru_2026';
+  invalidateCatIndex();
   await putMeta('budgets', state.budgets);
   await putMeta('email', state.email);
+
+  // A few entries, so the history and search have something to show. Only on a
+  // genuinely empty ledger — never on top of real ones.
+  if (!state.entries.length) {
+    const rows = [
+      ['2026-02-04', 'cat_food_group', 'Group lunch, Marita Restaurant', 35500, 'cash', 'katie'],
+      ['2026-02-04', 'cat_transport', 'Taxi to Ollantaytambo', 12000, 'cash', 'katie'],
+      ['2026-02-05', 'cat_food_group', 'Group dinner, Pisonay Calca', 41200, 'cash', 'sam'],
+      ['2026-02-06', 'cat_activity', 'Salineras entry, 14 pax', 63000, 'card', 'katie'],
+      ['2026-02-07', 'cat_food_staff', 'Staff breakfast', 4800, 'cash', 'sam'],
+      ['2026-02-08', 'cat_gratuity', 'Porters, Lares trek', 90000, 'cash', 'katie'],
+      ['2026-02-09', 'cat_firstaid', 'Rehydration salts, Inkafarma', 3450, 'cash', 'sam'],
+      ['2026-02-10', 'cat_transport', 'Bus Cusco to Puno', 58000, 'card', 'katie'],
+      ['2026-02-11', 'cat_food_group', 'Group lunch, Puno market', 28900, 'cash', 'katie'],
+      ['2026-02-12', 'cat_misc', 'Replacement dry bag', 15900, 'cash', 'sam'],
+    ];
+    for (const [d, c, desc, amt, method, who] of rows) {
+      await putEntry({
+        id: `demo_${c}_${d}_${amt}`, budget_id: 'bud_peru_2026', category_id: c,
+        email: `${who}@pacificdiscovery.org`, entry_type: 'expense', group_id: null,
+        spent_on: d, amount: amt, currency: 'PEN', rate: 1, budget_amount: amt,
+        payment_method: method, description: desc, receipt_key: null, corrects_id: null,
+        created_at: `${d}T12:00:00.000Z`, pending: 0,
+      });
+    }
+    await putEntry({
+      id: 'demo_withdrawal_1', budget_id: 'bud_peru_2026', category_id: null,
+      email: state.email, entry_type: 'withdrawal', group_id: null,
+      spent_on: '2026-02-03', amount: 400000, currency: 'PEN', rate: 1, budget_amount: 0,
+      payment_method: 'cash', description: 'ATM, BCP Cusco airport', receipt_key: null,
+      corrects_id: null, created_at: '2026-02-03T09:00:00.000Z', pending: 0,
+    });
+    state.entries = await allEntries();
+  }
   render();
 }
 

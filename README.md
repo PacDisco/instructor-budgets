@@ -129,7 +129,8 @@ cp .env.example .env     # fill it in
 npm run dev              # netlify dev, serves app + functions together
 ```
 
-`/?demo=1` seeds a local budget with no backend at all, for showing the UI.
+`/?demo=1` seeds a local budget — one leg, three levels of category, a dozen
+entries across two instructors — with no backend at all, for showing the UI.
 
 ## Auth model
 
@@ -149,6 +150,33 @@ it can't be used to enumerate staff addresses.
 Sessions last 30 days. Field devices go weeks between logins.
 
 No passwords are stored, hashed, or handled anywhere.
+
+## Finding things
+
+Tapping a category opens that category's own history — its balance, everything
+logged against it and anything under it, and a button to log into it — rather
+than jumping straight to the spend form. The form is still one tap away on the
+dock, which is where logging actually starts; a category is where an instructor
+goes to ask "did I already put the Cusco bus in?".
+
+The same panel backs the dock's History button, unscoped, with a category
+filter. Both carry a search box that matches description, category and leg name,
+entry type, payment method, currency, amount (`355` and `355.00` both hit PEN
+355.00), date, month name, and who logged it. Multiple words all have to match,
+so `group lunch` and `sam card` narrow the way you'd expect. Matches are
+highlighted in the row.
+
+Lists page at 40 rather than the old hard cap of 80, so a long programme's
+earlier entries are reachable instead of silently absent.
+
+Every instructor on a budget sees the whole budget's entries, which is what the
+API already sends and what the gauges already total. Each row names who logged
+it — `you` or their first name — and a **Mine** toggle filters to your own. The
+alternative, hiding co-instructors' rows, would leave the list and the balance
+above it disagreeing with no explanation.
+
+Descriptions are instructor free text and are HTML-escaped on the way into every
+row, which matters more now they are also being highlighted.
 
 ## Receipts
 
@@ -234,7 +262,10 @@ precisely.
   the converted figure so a wrong rate is visible before saving, but a rates map
   per budget is the real fix.
 - **Description is optional.** Blank descriptions fall back to the category name —
-  the same ambiguity that made the sheet hard to reconcile.
+  the same ambiguity that made the sheet hard to reconcile, and the one thing
+  search cannot work around.
+- **Search is client-side**, over the ledger already in IndexedDB. That is the
+  point — it works offline — but it only ever sees budgets this device syncs.
 - **Magic links need Resend.** Until that's configured, Google is the only way in.
 - **Receipts route through a Function**, so they count against function invocation
   and bandwidth rather than going straight to storage. Fine at a few hundred per
