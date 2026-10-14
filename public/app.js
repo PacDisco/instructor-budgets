@@ -274,10 +274,10 @@ function cashFloat() {
 /* ---------------- sync ---------------- */
 
 async function refreshFromServer() {
-  const res = await fetch(`${API}/me`, {
+  const res = await fetchWithin(`${API}/me`, {
     credentials: 'include', headers: { accept: 'application/json' },
-  });
-  if (res.status === 401) { showSignIn(); throw new Error('signed_out'); }
+  }, 30_000);
+  if (res.status === 401) throw new SignedOut();
   if (!res.ok) throw new Error(`me ${res.status}`);
   const data = await res.json();
   state.email = data.email;
@@ -286,6 +286,27 @@ async function refreshFromServer() {
   await putMeta('budgets', state.budgets);
   await putMeta('email', state.email);
   for (const e of data.entries || []) await putEntry({ ...e, pending: 0 });
+}
+
+// fetch() has no timeout of its own. A request that stalls on a dead uplink
+// holds `syncing` true, and every later sync — including "Sync now" — returns
+// without doing anything until the app is killed.
+async function fetchWithin(url, opts, ms) {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), ms);
+  try {
+    return await fetch(url, { ...opts, signal: ctl.signal });
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// A 401 here means the session has lapsed. It has to surface as the sign-in
+// screen: before this, the outbox's 401s were swallowed as "no connection", the
+// /api/me call that shows sign-in was never reached, and a device sat on
+// "photos stuck" indefinitely with nothing the instructor could do about it.
+class SignedOut extends Error {
+  constructor() { super('signed_out'); }
 }
 
 async function pushOutbox() {
@@ -303,15 +324,17 @@ async function pushOutbox() {
       // this entry was for. Send a note it can name the file with. A header
       // rather than a query string: URLs get logged, and this is the
       // instructor's own free text.
-      const r = await fetch(
+      const r = await fetchWithin(
         `${API}/receipts/${encodeURIComponent(e.id)}?budget=${encodeURIComponent(e.budget_id)}`,
         { method: 'PUT', credentials: 'include',
           headers: {
             'content-type': blob.type || 'image/jpeg',
             'x-receipt-note': receiptNote(e),
           },
-          body: blob }
+          body: blob },
+        90_000
       );
+      if (r.status === 401) throw new SignedOut();
       if (r.ok) {
         const { file_id, link } = await r.json();
         e.receipt_file_id = file_id; e.receipt_link = link;
@@ -326,17 +349,23 @@ async function pushOutbox() {
         console.error('receipt upload failed', r.status, body);
       }
     } catch (err) {
-      e.receipt_error = 'No connection while uploading the photo';
+      if (err instanceof SignedOut) throw err;
+      e.receipt_error = err && err.name === 'AbortError'
+        ? 'The connection was too slow to send the photo — it will retry'
+        : 'No connection while uploading the photo';
       await putEntry(e);
     }
   }
 
-  const payload = pending.map(({ pending: _p, receipt_uploaded: _r, receipt_key: _k, ...rest }) => rest);
-  const res = await fetch(`${API}/sync`, {
+  const payload = pending.map(({
+    pending: _p, receipt_uploaded: _r, receipt_key: _k, receipt_error: _re, sync_error: _se, ...rest
+  }) => rest);
+  const res = await fetchWithin(`${API}/sync`, {
     method: 'POST', credentials: 'include',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ entries: payload }),
-  });
+  }, 30_000);
+  if (res.status === 401) throw new SignedOut();
   if (!res.ok) throw new Error(`sync ${res.status}`);
   const { accepted = [], rejected = [] } = await res.json();
   for (const id of accepted) {
@@ -389,9 +418,16 @@ async function sync({ quiet = false } = {}) {
     await putMeta('lastSync', new Date().toISOString());
     state.online = true;
     if (!quiet) toast('Up to date');
-  } catch {
-    state.online = false;
-    if (!quiet) toast('No connection — saved on this device');
+  } catch (err) {
+    if (err instanceof SignedOut) {
+      // Reachable server, lapsed session: that is not "offline".
+      state.online = true;
+      // Only call it "expired" if this device was signed in before.
+      showSignIn({ expired: Boolean(state.email) });
+    } else {
+      state.online = false;
+      if (!quiet) toast('No connection — saved on this device');
+    }
   } finally {
     syncing = false;
     render();
@@ -1363,7 +1399,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden && na
 
 let signInShown = false;
 
-function showSignIn() {
+function showSignIn({ expired = false } = {}) {
   if (signInShown) return;
   signInShown = true;
   document.body.classList.add('signed-out');
@@ -1373,6 +1409,13 @@ function showSignIn() {
   const msg = document.getElementById('signinMsg');
   if (params.get('auth') === 'expired') {
     msg.textContent = 'That link had already been used or expired. Send another.';
+  } else if (expired) {
+    // Signing back in keeps everything on the device — only Sign out clears it.
+    // Say so, or someone with unsynced spend may reinstall to "fix" it.
+    const waiting = state.entries.filter((e) => e.pending === 1).length;
+    msg.textContent = waiting
+      ? `Your sign-in has expired. Sign in again to send the ${waiting} entr${waiting === 1 ? 'y' : 'ies'} saved on this phone — nothing has been lost.`
+      : 'Your sign-in has expired. Sign in again to keep syncing.';
   }
 
   wireAccessCode();

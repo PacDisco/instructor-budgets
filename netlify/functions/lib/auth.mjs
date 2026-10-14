@@ -28,15 +28,32 @@ export async function issueSession(email) {
     .sign(secret());
 }
 
-export async function currentEmail(request) {
+export async function currentSession(request) {
   const token = readCookie(request, 'fb_session');
   if (!token) return null;
   try {
     const { payload } = await jwtVerify(token, secret());
-    return normaliseEmail(payload.email);
+    const email = normaliseEmail(payload.email);
+    return email ? { email, issuedAt: Number(payload.iat) || 0 } : null;
   } catch {
     return null;
   }
+}
+
+export async function currentEmail(request) {
+  const s = await currentSession(request);
+  return s ? s.email : null;
+}
+
+// Sessions slide. A fixed 30 days from sign-in meant every instructor who signed
+// in at the start of a programme was logged out mid-programme on the same day,
+// often somewhere they couldn't easily sign back in. A device that checks in at
+// least once a month now stays signed in for as long as it's assigned to a
+// budget; one left in a drawer still lapses after 30 days.
+const RENEW_AFTER_S = 24 * 60 * 60;
+
+export function sessionNeedsRenewal(session) {
+  return Boolean(session) && Date.now() / 1000 - session.issuedAt > RENEW_AFTER_S;
 }
 
 /* ---------- Google ---------- */

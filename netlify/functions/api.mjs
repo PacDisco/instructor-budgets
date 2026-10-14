@@ -4,7 +4,7 @@
 import { json, corsHeaders, readCookie, sessionCookie, normaliseEmail } from './lib/http.mjs';
 import { db, adminEmails, assignedBudgetIds, coerceMoney } from './lib/db.mjs';
 import {
-  issueSession, currentEmail, SESSION_MAX_AGE,
+  issueSession, currentSession, sessionNeedsRenewal, SESSION_MAX_AGE,
   emailFromGoogleCredential, createMagicToken, consumeMagicToken,
   sendMagicLink, emailIsKnown, checkAccessCode,
 } from './lib/auth.mjs';
@@ -340,10 +340,19 @@ export default async function handler(request) {
       return json({ google_client_id: process.env.GOOGLE_CLIENT_ID || null }, 200, request);
     }
 
-    const email = await currentEmail(request);
-    if (!email) return json({ error: 'signed_out' }, 401, request);
+    const session = await currentSession(request);
+    if (!session) return json({ error: 'signed_out' }, 401, request);
+    const { email } = session;
 
-    if (path === '/api/me') return await getMe(request, email);
+    if (path === '/api/me') {
+      const res = await getMe(request, email);
+      // Renew on /api/me, which every sync ends with. Only while the address is
+      // still assigned or an admin, so unassigning someone still cuts them off.
+      if (res.ok && sessionNeedsRenewal(session) && (await emailIsKnown(email))) {
+        res.headers.append('set-cookie', sessionCookie(await issueSession(email), SESSION_MAX_AGE));
+      }
+      return res;
+    }
     if (path === '/api/sync' && request.method === 'POST') return await postSync(request, email);
 
     // Walks the Drive prerequisites and reports the first that fails. Admin only
