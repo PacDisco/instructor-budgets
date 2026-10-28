@@ -1,0 +1,51 @@
+{
+  "name": "Unearthed Education",
+  "copy": {
+    "logo.png": "public/logo.png",
+    "logo-dark.png": "public/logo-dark.png",
+    "icon-192.png": "public/icon-192.png",
+    "icon-512.png": "public/icon-512.png",
+    "manifest.webmanifest": "public/manifest.webmanifest",
+    "fonts/Inter-Regular.woff2": "public/fonts/Inter-Regular.woff2",
+    "fonts/Inter-Medium.woff2": "public/fonts/Inter-Medium.woff2",
+    "fonts/Inter-SemiBold.woff2": "public/fonts/Inter-SemiBold.woff2",
+    "assetlinks.json": "public/.well-known/assetlinks.json"
+  },
+  "appendCss": { "brand.css": "public/app.css" },
+  "replace": {
+    "public/index.html": [
+      { "find": "<meta name=\"theme-color\" content=\"#ffffff\">",
+        "with": "<meta name=\"theme-color\" content=\"#2d6b74\">", "count": 1 },
+      { "find": "<title>Field Budget</title>",
+        "with": "<title>Unearthed Field Budget</title>", "count": 1 },
+      { "find": "/fonts/Poppins-Regular.woff2",
+        "with": "/fonts/Inter-Regular.woff2", "count": 1 },
+      { "find": "/fonts/DMSerifDisplay-Regular.woff2",
+        "with": "/fonts/Inter-SemiBold.woff2", "count": 1 },
+      { "find": "<img class=\"bar-logo\" src=\"/logo.png\" alt=\"Pacific Discovery\" width=\"314\" height=\"84\">",
+        "with": "<img class=\"bar-logo\" src=\"/logo.png\" alt=\"Unearthed Education\" width=\"493\" height=\"120\">", "count": 1 },
+      { "find": "<img class=\"signin-logo\" src=\"/logo.png\" alt=\"Pacific Discovery\" width=\"314\" height=\"84\">",
+        "with": "<img class=\"signin-logo\" src=\"/logo-dark.png\" alt=\"Unearthed Education\" width=\"493\" height=\"120\">", "count": 1 },
+      { "find": "the access code your programme director gave you",
+        "with": "the access code the Unearthed team gave you", "count": 1 },
+      { "find": "placeholder=\"From your programme director\"",
+        "with": "placeholder=\"From the Unearthed team\"", "count": 1 },
+      { "find": "placeholder=\"you@pacificdiscovery.org\"",
+        "with": "placeholder=\"you@example.org\"", "count": 2 }
+    ],
+    "public/app.js": [
+      { "find": "Ask your programme director to add",
+        "with": "Ask the Unearthed team to add", "count": 3 },
+      { "find": "@pacificdiscovery.org",
+        "with": "@unearthededucation.org", "count": 2 }
+    ],
+    "public/sw.js": [
+      { "regex": "const SHELL = 'field-budget-v(\\d+)';",
+        "with": "const SHELL = 'ue-field-budget-v$1';", "count": 1 },
+      { "find": "'/logo.png', '/icon-192.png',",
+        "with": "'/logo.png', '/logo-dark.png', '/icon-192.png',", "count": 1 },
+      { "find": "  '/fonts/Poppins-Regular.woff2',\n  '/fonts/Poppins-Medium.woff2',\n  '/fonts/Poppins-SemiBold.woff2',\n  '/fonts/DMSerifDisplay-Regular.woff2',\n",
+        "with": "  '/fonts/Inter-Regular.woff2',\n  '/fonts/Inter-Medium.woff2',\n  '/fonts/Inter-SemiBold.woff2',\n", "count": 1 }
+    ]
+  }
+}

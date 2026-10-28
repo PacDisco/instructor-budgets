@@ -1,6 +1,9 @@
 [build]
   publish = "public"
   functions = "netlify/functions"
+  # No-op unless the site sets BRAND (the Unearthed site sets BRAND=ue).
+  # See scripts/apply-brand.mjs.
+  command = "node scripts/apply-brand.mjs"
 
 # Long-established rewrite. The function reads the original path from req.url.
 [[redirects]]

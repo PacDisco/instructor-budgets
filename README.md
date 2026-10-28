@@ -121,6 +121,67 @@ app renders with a browser URL bar over it.
 
 Icons are generated placeholders — replace before the fleet push.
 
+## Second brand: Unearthed Education
+
+The same code runs Unearthed's leader app at `budget.unearthededucation.org`.
+It is a **second Netlify site pointed at this repo**, not a fork, so every fix
+lands on both. What differs is configuration:
+
+- **Branding** — the site sets `BRAND=ue`. The build command
+  (`scripts/apply-brand.mjs`) then lays `brands/ue/` over `public/` before
+  publishing: Unearthed logo and icons, Inter (self-hosted, for offline), the
+  leader portal's teal palette appended to `app.css`, and a few strings swapped
+  in `index.html`, `app.js` and `sw.js`. With `BRAND` unset — the PD site — it
+  does nothing.
+- **Data** — its own Neon database, receipts Shared Drive, Google OAuth client
+  and service-account membership, session secret and sender address. Unearthed
+  leaders, receipts and spend never touch PD's.
+
+Every string swap declares how many times it must match. Change copy in
+`index.html` or `app.js` so a swap no longer matches and **the Unearthed deploy
+fails** instead of shipping a PD-branded screen — update
+`brands/ue/brand.json` and redeploy. To preview locally:
+`BRAND=ue node scripts/apply-brand.mjs --force`, then `git checkout public`
+and `git clean -fd public` afterwards. Never commit a branded `public/`.
+
+### Standing it up
+
+1. **Neon** — new project. Run `db/init-new-database.sql` (schema plus every
+   migration, no Peru seed). Don't run `db/schema.sql` + migrations by hand on a
+   fresh database: `schema.sql` still creates the old one-level category
+   trigger, which then rejects leg → category → subcategory trees.
+2. **Google Cloud** — an OAuth web client with
+   `https://budget.unearthededucation.org` as an authorised origin (or reuse
+   PD's client and add the origin). A receipts Shared Drive for Unearthed with
+   the service account as Content manager — a new service account is cleaner,
+   PD's works if added to the UE drive.
+3. **Resend** — verify `unearthededucation.org` if magic links should come
+   from that domain.
+4. **Netlify** — new site from this repo. Same publish/functions settings
+   (they're in `netlify.toml`). Environment:
+
+   | Name | Unearthed value |
+   |---|---|
+   | `BRAND` | `ue` |
+   | `DATABASE_URL` | the new Neon pooled string |
+   | `SESSION_SECRET` | a **new** one — never PD's |
+   | `GOOGLE_CLIENT_ID` | as above |
+   | `GOOGLE_SA_EMAIL`, `GOOGLE_SA_PRIVATE_KEY` | as above |
+   | `DRIVE_ROOT_FOLDER_ID` | the Unearthed receipts folder |
+   | `RESEND_API_KEY` | as PD |
+   | `MAIL_FROM` | `Unearthed Field Budget <noreply@unearthededucation.org>` |
+   | `APP_ORIGIN` | `https://budget.unearthededucation.org` |
+   | `ADMIN_EMAILS` | Unearthed admins |
+
+   Add the custom domain `budget.unearthededucation.org`.
+5. **Dashboard** — set `UE_FIELD_BUDGET_DATABASE_URL` on the dashboard site to
+   the same Neon string. See `FIELD-BUDGET.md` there.
+6. **Android** — `brands/ue/twa-manifest.example.json` has the Unearthed package
+   id (`org.unearthededucation.fieldbudget`) and colours. Build as in
+   `ANDROID.md`, then paste the signing SHA-256 into
+   `brands/ue/assetlinks.json` (it is copied to `/.well-known/` on the UE build
+   only) and redeploy.
+
 ## Local development
 
 ```bash

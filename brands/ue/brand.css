@@ -1,0 +1,75 @@
+
+/* ==== Unearthed Education brand layer ====================================
+   Appended to app.css by scripts/apply-brand.mjs when BRAND=ue. Everything
+   above this line is the shared app; this only re-points tokens and type.
+
+   Taken from the Unearthed leader portal: Inter, deep teal #2d6b74 header and
+   buttons, light teal #59a1aa accents, cream #f9f8f2 paper, sand #e2decf rules,
+   near-black #231f20 text, square-cornered controls.
+
+   Inter is self-hosted for the same reason Poppins is: the app has to open
+   with no signal. */
+
+@font-face {
+  font-family: 'Inter';
+  src: url('/fonts/Inter-Regular.woff2') format('woff2');
+  font-weight: 400; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('/fonts/Inter-Medium.woff2') format('woff2');
+  font-weight: 500; font-style: normal; font-display: swap;
+}
+@font-face {
+  font-family: 'Inter';
+  src: url('/fonts/Inter-SemiBold.woff2') format('woff2');
+  font-weight: 600; font-style: normal; font-display: swap;
+}
+
+:root {
+  --paper: #f9f8f2;
+  --card: #ffffff;
+  --ink: #231f20;
+  --ink-strong: #231f20;
+  --muted: #6b6b6b;         /* 5.2:1 on white, 4.9:1 on the cream paper */
+  --rule: #e2decf;
+  --gauge: #ece6d6;
+
+  /* The PD token names are kept so no rule above needs touching. */
+  --topaz: #59a1aa;         /* light teal — gauge fills, accents */
+  --topaz-dark: #2d6b74;    /* deep teal — buttons, focus; 6.1:1 with white */
+  --topaz-darker: #22535a;
+  --topaz-soft: #eaf3f4;
+  --green: #5b8f6a;         /* synced dot */
+  --over: #c0392b;
+  --over-soft: #fdf0ef;
+
+  --radius: 4px;
+  --pill: 4px;              /* the portal's controls are square-cornered */
+}
+
+html, body,
+.section-head h2 {
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+/* Inter has real tabular figures, so money columns can use them. */
+.num { font-feature-settings: 'tnum' 1; letter-spacing: 0; }
+
+h1, h2, .bar-name {
+  font-family: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* Header as on the portal: deep teal with the cream logo. */
+.bar {
+  background: var(--topaz-dark);
+  border-bottom-color: var(--topaz-darker);
+}
+.bar-logo { height: 20px; }
+.bar-name { color: #ffffff; }
+.bar-sub { color: rgba(255, 255, 255, 0.78); }
+.bar-id:focus-visible { outline-color: #ffffff; }
+.bar .chip { border-color: rgba(255, 255, 255, 0.35); }
+
