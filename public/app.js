@@ -254,14 +254,34 @@ function voidedIds() {
   return out;
 }
 
+// The signed-in instructor's own pocket, per currency. Mirrors the admin
+// dashboard's _shared/field-cash.mjs so the two screens agree:
+//
+//   - A correction is resolved to the entry it voids and counted as THAT type.
+//     Treating every cash correction as an expense undo was wrong for movements:
+//     a withdrawal carries payment_method 'cash', so voiding a +60,000 withdrawal
+//     (correction −60,000) was read as "expense refunded" and ADDED 60,000,
+//     doubling the mistake instead of cancelling it.
+//   - Each entry counts against the person who logged the ORIGINAL. Anyone on a
+//     budget can remove anyone's entry, and the correction carries the remover's
+//     email, so attributing by the correction's own email moves cash between
+//     pockets.
+//   - Only the signed-in instructor's entries count. The section is labelled
+//     "yours"; the whole team's ledger is on the device, so without this filter
+//     it showed the budget-wide total.
 function cashFloat() {
+  const entries = budgetEntries();
+  const byId = new Map(entries.map((e) => [e.id, e]));
   const byCur = {};
-  for (const e of budgetEntries()) {
-    const add = (cur, amt) => { byCur[cur] = (byCur[cur] || 0) + amt; };
-    if (e.entry_type === 'withdrawal' || e.entry_type === 'exchange' || e.entry_type === 'transfer') {
+  const add = (cur, amt) => { byCur[cur] = (byCur[cur] || 0) + amt; };
+  for (const e of entries) {
+    const orig = e.entry_type === 'correction' ? byId.get(e.corrects_id) : e;
+    if (!orig) continue; // original not on this device; can't tell which way it nets
+    if (state.email && !isMine(orig)) continue;
+    const kind = orig.entry_type;
+    if (kind === 'withdrawal' || kind === 'exchange' || kind === 'transfer') {
       add(e.currency, e.amount); // signed: cash in positive, cash out negative
-    } else if ((e.entry_type === 'expense' || e.entry_type === 'correction')
-               && e.payment_method === 'cash') {
+    } else if (kind === 'expense' && orig.payment_method === 'cash') {
       // A correction carries a negated amount, so this adds the cash back.
       add(e.currency, -e.amount);
     }
