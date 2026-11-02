@@ -883,16 +883,23 @@ function openSpend(categoryId, existing) {
   setTimeout(() => amt.focus(), 60);
 }
 
-function openCash() {
+// With `editing` set, the form opens on that movement's values and Save replaces
+// it: the old row (or pair) is removed exactly as "Remove this entry" would —
+// voided by a correction if synced, deleted if not — and the new one written.
+function openCash(editing) {
   const b = budget();
   if (!b) return;
+  const pair = editing ? movementRows(editing) : [];
+  const neg = pair.find((x) => x.amount < 0);
+  const pos = pair.find((x) => x.amount > 0);
+  const major = (x) => (x ? x.amount / minor(x.currency) : '');
   // The other instructors on this budget. Older cached budgets predate the
   // list; they get it on the next sync.
   const me = String(state.email || '').toLowerCase();
   const others = (b.instructors || []).filter((m) => String(m).toLowerCase() !== me);
   const form = el(`
     <div>
-      <h2>Cash movement</h2>
+      <h2>${editing ? 'Change cash movement' : 'Cash movement'}</h2>
       <label>What happened</label>
       <div class="seg" id="kind">
         <button type="button" data-v="withdrawal" aria-pressed="true">Withdrew</button>
@@ -974,6 +981,35 @@ function openCash() {
     form.querySelector('#tpersonlbl').textContent = dir === 'gave' ? 'To' : 'From';
   });
 
+  // Prefill from the movement being changed.
+  if (editing) {
+    const set = (sel, v) => { const n = form.querySelector(sel); if (n && v !== undefined && v !== null) n.value = v; };
+    const ensureOpt = (sel, cur) => {
+      const n = form.querySelector(sel);
+      if (n && cur && ![...n.options].some((o) => o.value === cur)) n.append(el(`<option>${esc(cur)}</option>`));
+      set(sel, cur);
+    };
+    form.querySelector(`#kind button[data-v="${editing.entry_type}"]`)?.click();
+    set('#cdate', day(editing.spent_on));
+    // Handover notes are "Gave X: note" — keep only the instructor's own part.
+    const rawNote = (pos || editing).description || '';
+    set('#cdesc', editing.entry_type === 'transfer'
+      ? (rawNote.includes(': ') ? rawNote.slice(rawNote.indexOf(': ') + 2) : '') : rawNote);
+    if (editing.entry_type === 'withdrawal') {
+      set('#wamt', major(editing)); ensureOpt('#wcur', editing.currency);
+    } else if (editing.entry_type === 'exchange') {
+      set('#xout', neg ? -major(neg) : ''); ensureOpt('#xoutcur', neg && neg.currency);
+      set('#xin', major(pos)); ensureOpt('#xincur', pos && pos.currency);
+      recalc();
+    } else if (editing.entry_type === 'transfer' && tdir) {
+      const iGave = neg && isMine(neg);
+      tdir.querySelector(`button[data-v="${iGave ? 'gave' : 'got'}"]`).click();
+      const other = iGave ? pos : neg;
+      if (other) ensureOpt('#tperson', other.email);
+      set('#tamt', major(pos)); ensureOpt('#tcur', pos && pos.currency);
+    }
+  }
+
   form.querySelector('#ccancel').addEventListener('click', closeSheet);
   form.querySelector('#csave').addEventListener('click', async () => {
     const cerr = form.querySelector('#cerr');
@@ -1025,8 +1061,11 @@ function openCash() {
         amount: toMinor(inn, inCur), currency: inCur, rate: 1, budget_amount: 0 });
     }
 
+    // The replacement is written; now retire what it replaces.
+    if (editing) await removeEntry(editing);
+
     state.entries = await allEntries();
-    closeSheet(); render(); toast('Saved');
+    closeSheet(); render(); toast(editing ? 'Changed' : 'Saved');
     if (navigator.onLine) sync({ quiet: true });
   });
 
@@ -1358,6 +1397,29 @@ const nodeById = (id) => categoryRows().find((r) => r.id === id) || null;
 const openHistory = () => openEntries({ fresh: true });
 const openCategory = (node) => openEntries({ node: typeof node === 'string' ? nodeById(node) : node });
 
+// An exchange or a handover is a pair. Removing one half would leave cash
+// appearing from nowhere (or vanishing), so the whole group goes together.
+function movementRows(e) {
+  const voided = voidedIds();
+  return (e.entry_type === 'exchange' || e.entry_type === 'transfer') && e.group_id
+    ? budgetEntries().filter((x) => x.group_id === e.group_id && x.entry_type === e.entry_type
+        && !voided.has(x.id))
+    : [e];
+}
+
+// Unsynced rows are deleted outright; synced ones get a correction.
+async function removeEntry(e) {
+  const corrGroup = uuid();
+  for (const x of movementRows(e)) {
+    if (x.pending === 1) {
+      await delEntry(x.id);
+      if (x.receipt_key) await putReceipt(x.receipt_key, null).catch(() => {});
+    } else {
+      await putEntry(voidOf(x, corrGroup));
+    }
+  }
+}
+
 /* ---------------- editing an entry ----------------
    Two paths, and which one applies depends on whether the entry has left the
    device.
@@ -1403,11 +1465,18 @@ function openEntry(e, back) {
   wrap.querySelector('#eCancel').addEventListener('click', goBack);
 
   wrap.querySelector('#eEdit').addEventListener('click', () => {
-    if (e.entry_type !== 'expense') {
-      toast('Cash movements can only be removed, not changed');
+    if (e.entry_type === 'expense') { openSpend(e.category_id, e); return; }
+    if (['withdrawal', 'exchange', 'transfer'].includes(e.entry_type)) {
+      // The replacement is logged as whoever saves it, so changing someone
+      // else's withdrawal would move their cash into your pocket.
+      if (!movementRows(e).some(isMine)) {
+        toast(`Only ${personOf(e)} can change this — you can remove it`);
+        return;
+      }
+      openCash(e);
       return;
     }
-    openSpend(e.category_id, e);
+    toast('This entry can only be removed, not changed');
   });
 
   wrap.querySelector('#eDel').addEventListener('click', async () => {
@@ -1415,22 +1484,7 @@ function openEntry(e, back) {
       ? 'Remove this entry? A correction will be recorded against it.'
       : 'Remove this entry? It has not synced, so it disappears entirely.')) return;
 
-    // An exchange or a handover is a pair. Removing one half would leave cash
-    // appearing from nowhere (or vanishing), so the whole group goes together.
-    const voided = voidedIds();
-    const rows = (e.entry_type === 'exchange' || e.entry_type === 'transfer') && e.group_id
-      ? budgetEntries().filter((x) => x.group_id === e.group_id && x.entry_type === e.entry_type
-          && !voided.has(x.id))
-      : [e];
-    const corrGroup = uuid();
-    for (const x of rows) {
-      if (x.pending === 1) {
-        await delEntry(x.id);
-        if (x.receipt_key) await putReceipt(x.receipt_key, null).catch(() => {});
-      } else {
-        await putEntry(voidOf(x, corrGroup));
-      }
-    }
+    await removeEntry(e);
     state.entries = await allEntries();
     closeSheet(); render(); toast('Removed');
     if (navigator.onLine) sync({ quiet: true });
