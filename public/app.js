@@ -396,6 +396,7 @@ async function pushOutbox() {
   const REASONS = {
     bad_date: 'The date is missing or invalid — open the entry and set it again.',
     not_assigned: 'You are no longer assigned to that budget.',
+    transfer_counterparty: 'That handover names someone who isn\'t on this budget — remove it and log it again.',
   };
   for (const r of rejected) {
     const e = pending.find((x) => x.id === r.id);
@@ -885,6 +886,10 @@ function openSpend(categoryId, existing) {
 function openCash() {
   const b = budget();
   if (!b) return;
+  // The other instructors on this budget. Older cached budgets predate the
+  // list; they get it on the next sync.
+  const me = String(state.email || '').toLowerCase();
+  const others = (b.instructors || []).filter((m) => String(m).toLowerCase() !== me);
   const form = el(`
     <div>
       <h2>Cash movement</h2>
@@ -892,6 +897,7 @@ function openCash() {
       <div class="seg" id="kind">
         <button type="button" data-v="withdrawal" aria-pressed="true">Withdrew</button>
         <button type="button" data-v="exchange" aria-pressed="false">Exchanged</button>
+        <button type="button" data-v="transfer" aria-pressed="false">Handover</button>
       </div>
       <div id="wd">
         <label for="wamt">Amount received</label>
@@ -911,6 +917,22 @@ function openCash() {
           <div><select id="xincur">${cashCurrencies(b).map((c) => `<option>${c}</option>`).join('')}</select></div>
         </div>
         <p class="hint" id="xhint"></p>
+      </div>
+      <div id="tr" hidden>
+        ${others.length ? `
+        <div class="seg small" id="tdir">
+          <button type="button" data-v="gave" aria-pressed="true">I gave</button>
+          <button type="button" data-v="got" aria-pressed="false">I received</button>
+        </div>
+        <label for="tperson" id="tpersonlbl">To</label>
+        <select id="tperson">${others.map((m) => `<option value="${esc(m)}">${esc(m.split('@')[0])}</option>`).join('')}</select>
+        <label for="tamt">Amount</label>
+        <div class="field-row">
+          <div><input class="num" id="tamt" type="number" inputmode="decimal" step="0.01" placeholder="0.00"></div>
+          <div><select id="tcur">${cashCurrencies(b).map((c) => `<option>${c}</option>`).join('')}</select></div>
+        </div>
+        <p class="hint">Logs both sides — it leaves one pocket and lands in the other. Only one of you needs to log it.</p>`
+        : `<p class="hint">You're the only instructor on this budget, so there's no one to hand cash to.</p>`}
       </div>
       <label for="cdesc">Note</label>
       <input id="cdesc" type="text" placeholder="ATM, Banco Pichincha, Baños">
@@ -939,6 +961,17 @@ function openCash() {
     form.querySelectorAll('#kind button').forEach((x) => x.setAttribute('aria-pressed', String(x === btn)));
     form.querySelector('#wd').hidden = kind !== 'withdrawal';
     form.querySelector('#ex').hidden = kind !== 'exchange';
+    form.querySelector('#tr').hidden = kind !== 'transfer';
+  });
+
+  let dir = 'gave';
+  const tdir = form.querySelector('#tdir');
+  if (tdir) tdir.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('button[data-v]');
+    if (!btn) return;
+    dir = btn.dataset.v;
+    tdir.querySelectorAll('button').forEach((x) => x.setAttribute('aria-pressed', String(x === btn)));
+    form.querySelector('#tpersonlbl').textContent = dir === 'gave' ? 'To' : 'From';
   });
 
   form.querySelector('#ccancel').addEventListener('click', closeSheet);
@@ -957,6 +990,27 @@ function openCash() {
       const currency = form.querySelector('#wcur').value;
       await putEntry({ ...base, id: uuid(), entry_type: 'withdrawal', group_id: null,
         amount: toMinor(v, currency), currency, rate: 1, budget_amount: 0 });
+    } else if (kind === 'transfer') {
+      if (!others.length) { cerr.textContent = 'No one else is on this budget.'; cerr.hidden = false; return; }
+      const v = Number(form.querySelector('#tamt').value);
+      if (!v || v <= 0) { cerr.textContent = 'Enter how much changed hands.'; cerr.hidden = false; return; }
+      const currency = form.querySelector('#tcur').value;
+      const other = form.querySelector('#tperson').value;
+      const amt = toMinor(v, currency);
+      const group = uuid();
+      const name = (m) => m.split('@')[0];
+      const note = desc ? `: ${desc}` : '';
+      // Two rows, one group, like an exchange — but across two pockets instead
+      // of two currencies. The server accepts the other person's half only
+      // alongside this one (see transferCounterpartyOk in api.mjs).
+      const giver = dir === 'gave' ? state.email : other;
+      const taker = dir === 'gave' ? other : state.email;
+      await putEntry({ ...base, id: uuid(), entry_type: 'transfer', group_id: group, email: giver,
+        description: `Gave ${name(taker)}${note}`,
+        amount: -amt, currency, rate: 1, budget_amount: 0 });
+      await putEntry({ ...base, id: uuid(), entry_type: 'transfer', group_id: group, email: taker,
+        description: `Received from ${name(giver)}${note}`,
+        amount: amt, currency, rate: 1, budget_amount: 0 });
     } else {
       const out = Number(form.querySelector('#xout').value);
       const inn = Number(form.querySelector('#xin').value);
@@ -1054,7 +1108,7 @@ async function signOut() {
 
 const TYPE_LABEL = {
   expense: 'Spend', withdrawal: 'Cash withdrawn', exchange: 'Exchange',
-  transfer: 'Transfer', correction: 'Correction',
+  transfer: 'Handover', correction: 'Correction',
 };
 const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july',
   'august', 'september', 'october', 'november', 'december'];
@@ -1361,11 +1415,21 @@ function openEntry(e, back) {
       ? 'Remove this entry? A correction will be recorded against it.'
       : 'Remove this entry? It has not synced, so it disappears entirely.')) return;
 
-    if (!synced) {
-      await delEntry(e.id);
-      if (e.receipt_key) await putReceipt(e.receipt_key, null).catch(() => {});
-    } else {
-      await putEntry(voidOf(e));
+    // An exchange or a handover is a pair. Removing one half would leave cash
+    // appearing from nowhere (or vanishing), so the whole group goes together.
+    const voided = voidedIds();
+    const rows = (e.entry_type === 'exchange' || e.entry_type === 'transfer') && e.group_id
+      ? budgetEntries().filter((x) => x.group_id === e.group_id && x.entry_type === e.entry_type
+          && !voided.has(x.id))
+      : [e];
+    const corrGroup = uuid();
+    for (const x of rows) {
+      if (x.pending === 1) {
+        await delEntry(x.id);
+        if (x.receipt_key) await putReceipt(x.receipt_key, null).catch(() => {});
+      } else {
+        await putEntry(voidOf(x, corrGroup));
+      }
     }
     state.entries = await allEntries();
     closeSheet(); render(); toast('Removed');

@@ -122,7 +122,7 @@ async function getMe(request, email) {
   const isAdmin = adminEmails().includes(email);
   if (!ids.length) return json({ email, is_admin: isAdmin, budgets: [], entries: [] }, 200, request);
 
-  const [budgets, categories, entries] = await Promise.all([
+  const [budgets, categories, entries, team] = await Promise.all([
     sql`select * from budgets where id = any(${ids}) and status = 'active'`,
     // Parent's position first, then parent-before-children, then the child's
     // own position — so the field app lists categories in the same order the
@@ -140,6 +140,8 @@ async function getMe(request, email) {
         )
         select * from tree order by path, id`,
     sql`select * from entries where budget_id = any(${ids}) order by received_at`,
+    // Who else is on each budget — the people an instructor can hand cash to.
+    sql`select budget_id, email from assignments where budget_id = any(${ids}) order by email`,
   ]);
 
   const cats = categories.map((c) => ({
@@ -151,6 +153,7 @@ async function getMe(request, email) {
     ...coerceMoney(b, MONEY_BUDGET),
     base_currency: b.base_currency || 'NZD',
     categories: cats.filter((c) => c.budget_id === b.id),
+    instructors: team.filter((t) => t.budget_id === b.id).map((t) => t.email),
   }));
 
   return json({
@@ -199,6 +202,22 @@ async function postSync(request, email) {
       if (!target.length) { rejected.push({ id: e.id, reason: 'correction_target_missing' }); continue; }
     }
 
+    // Every row is stamped with the signed-in instructor's email, with one
+    // exception: the other half of a cash handover between instructors. A
+    // transfer is a signed pair sharing a group_id — −X in the giver's pocket,
+    // +X in the receiver's — and either person can log it, so one half belongs
+    // to someone else. That half is accepted only if the named person is on the
+    // same budget AND its partner (same group, opposite amount) is the caller's
+    // own row, in this batch or already stored. Nothing else can write under
+    // another instructor's name.
+    let owner = email;
+    const claimed = normaliseEmail(e.email || '');
+    if (e.entry_type === 'transfer' && claimed && claimed !== (normaliseEmail(email) || email)) {
+      const ok = await transferCounterpartyOk(sql, e, claimed, email, incoming);
+      if (!ok) { rejected.push({ id: e.id, reason: 'transfer_counterparty' }); continue; }
+      owner = claimed;
+    }
+
     try {
       await sql`
         insert into entries (
@@ -206,7 +225,7 @@ async function postSync(request, email) {
           currency, rate, budget_amount, payment_method, description,
           receipt_file_id, receipt_link, corrects_id, created_at
         ) values (
-          ${e.id}, ${e.budget_id}, ${e.category_id ?? null}, ${email}, ${e.entry_type},
+          ${e.id}, ${e.budget_id}, ${e.category_id ?? null}, ${owner}, ${e.entry_type},
           ${e.group_id ?? null}, ${day}, ${Math.round(e.amount)}, ${e.currency},
           ${e.rate ?? 1}, ${Math.round(e.budget_amount)}, ${e.payment_method ?? 'cash'},
           ${e.description ?? ''}, ${e.receipt_file_id ?? null}, ${e.receipt_link ?? null},
@@ -219,6 +238,29 @@ async function postSync(request, email) {
     }
   }
   return json({ accepted, rejected }, 200, request);
+}
+
+async function transferCounterpartyOk(sql, e, claimed, email, batch) {
+  if (!e.group_id) return false;
+  const amount = Math.round(e.amount);
+  if (!amount) return false;
+  const onBudget = await sql`
+    select 1 from assignments where budget_id = ${e.budget_id} and email = ${claimed} limit 1`;
+  if (!onBudget.length) return false;
+  const me = normaliseEmail(email) || email;
+  const mine = (x) => (normaliseEmail(x.email || '') || me) === me;
+  const partnerInBatch = batch.some((x) =>
+    x.id !== e.id && x.entry_type === 'transfer' && x.group_id === e.group_id &&
+    x.budget_id === e.budget_id && x.currency === e.currency &&
+    Math.round(x.amount) === -amount && mine(x));
+  if (partnerInBatch) return true;
+  const stored = await sql`
+    select 1 from entries
+     where group_id = ${e.group_id} and budget_id = ${e.budget_id}
+       and entry_type = 'transfer' and email = ${email}
+       and currency = ${e.currency} and amount = ${-amount}
+     limit 1`;
+  return stored.length > 0;
 }
 
 // Receipts go up on their own request so a stuck photo on a bad uplink never
