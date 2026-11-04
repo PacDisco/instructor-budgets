@@ -160,7 +160,7 @@ main { padding: var(--pad) var(--pad) 108px; max-width: 560px; margin: 0 auto; }
 /* Three levels: leg headings are section-heads, so gauges start at depth 2.
    Depth 3 sits inside its parent's group. */
 .gauge.d3 {
-  margin-left: 14px; border-left: 3px solid var(--topaz-soft);
+  margin-left: 14px; width: calc(100% - 14px); border-left: 3px solid var(--topaz-soft);
   padding-top: 11px; padding-bottom: 14px;
 }
 .gauge.d3 .gauge-name { font-weight: 400; }
@@ -168,6 +168,102 @@ main { padding: var(--pad) var(--pad) 108px; max-width: 560px; margin: 0 auto; }
 /* A roll-up row is not directly loggable; it reads as a heading with a total. */
 .gauge[data-parent] { background: #fcfefe; }
 .gauge[data-parent] .gauge-name { font-weight: 600; }
+
+/* ---- overview ----
+   One card that answers "how are we doing" before anything else: time through
+   the programme, what's left across every leg, what has gone over, and the cash
+   in your pocket. The pace tick on each bar is today's position in the
+   programme, so a fill running past it means spend is ahead of the calendar. */
+.overview {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: var(--radius); padding: 14px 14px 4px; margin-top: 4px;
+}
+.ov-time { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.ov-time-label { flex: none; font-size: 0.78rem; font-weight: 500; color: var(--ink-strong); }
+.ov-time-track { flex: 1; height: 3px; background: var(--gauge); border-radius: 2px; overflow: hidden; }
+.ov-time-track > span { display: block; height: 100%; background: var(--ink); opacity: .55; }
+
+.ov-head { display: flex; flex-direction: column; padding-bottom: 12px; }
+.ov-left {
+  font-family: 'DM Serif Display', Times, serif;
+  font-size: 1.9rem; line-height: 1.1; color: var(--ink-strong);
+}
+.ov-left-label { font-size: 0.82rem; color: var(--muted); margin-top: 2px; }
+.ov-sub { font-size: 0.76rem; color: var(--muted); margin-top: 8px; }
+.ov-head.over .ov-left { color: var(--over); }
+.ov-head.over .gauge-fill { background: var(--over); }
+.ov-note { font-size: 0.7rem; color: var(--muted); margin-top: 6px; }
+
+.ov-track, .leg-track {
+  position: relative; display: block; height: 8px; margin-top: 8px;
+  background: var(--gauge); border-radius: 4px;
+}
+.ov-track .gauge-fill, .leg-track .gauge-fill { display: block; border-radius: 4px; }
+.pace-tick {
+  position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px;
+  background: var(--ink-strong); border-radius: 1px;
+}
+
+.ov-block { border-top: 1px solid var(--rule); padding: 10px 0 12px; }
+.ov-block-label { display: block; font-size: 0.74rem; font-weight: 500; color: var(--muted); margin-bottom: 6px; }
+.ov-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ov-chip {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  border: 1px solid var(--rule); background: var(--paper); color: var(--ink-strong);
+  border-radius: var(--pill); padding: 6px 12px; font: inherit; font-size: 0.82rem; font-weight: 500;
+}
+button.ov-chip { cursor: pointer; min-height: 36px; }
+.ov-chip.over { border-color: var(--over); background: var(--over-soft); color: var(--over); }
+.ov-chip-leg { font-weight: 400; opacity: .8; }
+.ov-none { font-size: 0.8rem; color: var(--muted); }
+
+/* ---- leg and history accordions ----
+   Native <details>, so it works with a screen reader and with no script. The
+   default marker is replaced with a chevron that turns on open. */
+.leg, .egroup {
+  background: var(--card); border: 1px solid var(--rule);
+  border-radius: var(--radius); margin-bottom: 10px; overflow: hidden;
+}
+.leg-head, .egroup-head {
+  position: relative; display: block; list-style: none; cursor: pointer;
+  padding: 13px 44px 14px 14px;
+}
+.leg-head::-webkit-details-marker, .egroup-head::-webkit-details-marker { display: none; }
+.leg-head:focus-visible, .egroup-head:focus-visible { outline: 2px solid var(--topaz-dark); outline-offset: -2px; }
+.leg-chev {
+  position: absolute; right: 16px; top: 20px; width: 9px; height: 9px;
+  border-right: 2px solid var(--muted); border-bottom: 2px solid var(--muted);
+  transform: rotate(45deg); transition: transform .18s ease;
+}
+details[open] > summary .leg-chev { transform: rotate(-135deg); top: 24px; }
+
+.leg-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+.leg-name { font-weight: 600; color: var(--ink-strong); font-size: 1.02rem; }
+.leg-cur {
+  font-size: 0.68rem; font-weight: 500; color: var(--muted);
+  border: 1px solid var(--rule); border-radius: 4px; padding: 0 5px; margin-left: 4px;
+  vertical-align: 2px;
+}
+.leg-left { font-size: 1.08rem; font-weight: 600; text-align: right; white-space: nowrap; }
+.leg-meta { display: block; margin-top: 2px; font-size: 0.74rem; color: var(--muted); }
+.leg-meta strong { font-weight: 600; color: var(--ink-strong); }
+.leg.over .leg-left { color: var(--over); }
+.leg.over .gauge-fill { background: var(--over); }
+
+.leg-body { padding: 0 10px 12px; border-top: 1px solid var(--rule); background: var(--paper); }
+.leg-body .gauge-list { padding-top: 10px; }
+.leg-entries {
+  display: block; width: 100%; margin-top: 10px; min-height: 44px;
+  border: 0; background: none; font: inherit; font-size: 0.86rem; font-weight: 500;
+  color: var(--topaz-dark); cursor: pointer; text-align: center;
+}
+
+.egroup-name { display: block; font-weight: 600; color: var(--ink-strong); }
+.egroup-meta { display: block; font-size: 0.74rem; color: var(--muted); }
+.egroup-body { padding: 0 12px 6px; border-top: 1px solid var(--rule); }
+.ghost.small { min-height: 40px; font-size: 0.82rem; margin: 6px 0 4px; }
+
+@media (prefers-reduced-motion: reduce) { .leg-chev { transition: none; } }
 
 /* ---- cash float ---- */
 .float-row {

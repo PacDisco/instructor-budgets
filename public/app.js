@@ -12,7 +12,7 @@ const API = (location.hostname === 'localhost' || location.hostname.endsWith('ne
 const ZERO_DECIMAL = new Set(['BIF','CLP','DJF','GNF','ISK','JPY','KMF','KRW',
   'PYG','RWF','UGX','VND','VUV','XAF','XOF','XPF']);
 const THREE_DECIMAL = new Set(['BHD','IQD','JOD','KWD','LYD','OMR','TND']);
-const state = { email: null, budgets: [], budgetId: null, entries: [], online: navigator.onLine };
+const state = { email: null, budgets: [], budgetId: null, entries: [], online: navigator.onLine, legOpen: {} };
 
 /* ---------------- storage ---------------- */
 
@@ -516,63 +516,213 @@ function render() {
     view.append(sel);
   }
 
-  const base = b.base_currency || 'NZD';
   const tree = categoryTree();
-
-  for (const leg of tree) {
-    // Each leg has its own currency, so a single combined total would be
-    // meaningless. The base-currency figure sits alongside for reporting.
-    const nzd = leg.currency === base
-      ? leg.remaining
-      : (planningRate(leg, base) ? Math.round(leg.remaining / planningRate(leg, base)) : null);
-
-    view.append(el(`<div class="section-head">
-        <h2>${leg.name}</h2>
-        <span class="num">${fmt(leg.remaining, leg.currency)} left${
-          nzd !== null && leg.currency !== base ? ` · ≈ ${fmt(nzd, base)}` : ''}</span>
-      </div>`));
-
-    const list = el('<div class="gauge-list"></div>');
-    const walk = (n) => {
-      const leaf = !n.kids.length;
-      const count = entryCount(n.id);
-      const g = el(`
-        <button class="gauge d${n.depth} ${n.over ? 'over' : ''}" type="button" ${leaf ? '' : 'data-parent="1"'}>
-          <span class="gauge-top">
-            <span class="gauge-name">${esc(n.name)}</span>
-            <span class="gauge-left num">${fmt(n.remaining, n.currency)}</span>
-          </span>
-          <span class="gauge-meta num">${fmt(n.spent, n.currency)} of ${fmt(n.allocated, n.currency)} spent${
-            count ? ` · ${count} entr${count === 1 ? 'y' : 'ies'}` : ''}</span>
-          <span class="gauge-track"><span class="gauge-fill" style="width:${n.pct}%"></span></span>
-        </button>`);
-      // Tapping a category opens its own history rather than the spend form.
-      // Logging is still one tap from the dock, and this is where an instructor
-      // goes to answer "did I already put the Cusco bus in?".
-      g.addEventListener('click', () => openCategory(n));
-      list.append(g);
-      n.kids.forEach(walk);
-    };
-    leg.kids.forEach(walk);
-    if (!leg.kids.length) {
-      list.append(el('<div class="empty">No categories in this leg yet.</div>'));
-    }
-    view.append(list);
-  }
+  view.append(overview(b, tree));
 
   if (!tree.length) {
     view.append(el('<div class="empty">This budget has no legs set up yet.</div>'));
+    return;
   }
 
-  const floats = cashFloat();
-  view.append(el(`<div class="section-head"><h2>Cash on hand</h2><span>${state.email ? 'yours' : ''}</span></div>`));
-  if (!floats.length) {
-    view.append(el('<div class="empty">No cash recorded. Log a withdrawal or exchange when you draw money.</div>'));
-  } else {
-    for (const f of floats) {
-      view.append(el(`<div class="float-row"><span class="float-cur">${f.currency}</span><span class="float-amt num ${f.amount < 0 ? 'negative' : ''}">${fmt(f.amount, f.currency)}</span></div>`));
-    }
+  view.append(el(`<div class="section-head"><h2>${tree.length > 1 ? 'Legs' : 'Categories'}</h2><span>tap to expand</span></div>`));
+  const time = programmeTime(b);
+  for (const leg of tree) view.append(legPanel(b, leg, tree.length, time));
+}
+
+/* ---------------- overview ----------------
+   The first thing an instructor sees: where the programme is in time, what is
+   left across every leg, what has gone over, and the cash in their pocket.
+   Legs below it are collapsed accordions, so the whole budget reads on one
+   screen and the category detail is one tap away. */
+
+const DAY_MS = 86_400_000;
+const dateOnly = (v) => { const d = day(v); return d ? new Date(`${d}T00:00:00`) : null; };
+
+// Where today sits in the programme. Null when the admin hasn't set dates, in
+// which case the time line and pace markers are left off rather than guessed.
+function programmeTime(b) {
+  const start = dateOnly(b.starts_on);
+  const end = dateOnly(b.ends_on);
+  if (!start || !end || end < start) return null;
+  const now = dateOnly(today());
+  const total = Math.round((end - start) / DAY_MS) + 1;
+  const dayN = Math.round((now - start) / DAY_MS) + 1;
+  if (dayN < 1) return { total, phase: 'before', days: 1 - dayN, pct: 0 };
+  if (dayN > total) return { total, phase: 'after', pct: 100 };
+  return { total, phase: 'during', dayN, left: total - dayN, pct: (dayN / total) * 100 };
+}
+
+// A total across legs is only honest in one currency. Same currency everywhere
+// -> exact. Otherwise convert to base at the planning rates, and say so with
+// the ≈. If any leg has no rate to base, there is no honest total at all.
+function programmeTotals(b, tree) {
+  const curs = [...new Set(tree.map((l) => l.currency).filter(Boolean))];
+  if (!tree.length) return null;
+  if (curs.length === 1 && tree.every((l) => l.currency === curs[0])) {
+    const allocated = tree.reduce((n, l) => n + l.allocated, 0);
+    const spent = tree.reduce((n, l) => n + l.spent, 0);
+    return { currency: curs[0], approx: false, allocated, spent, remaining: allocated - spent };
   }
+  const base = b.base_currency || 'NZD';
+  let allocated = 0;
+  let spent = 0;
+  for (const l of tree) {
+    // planningRate is leg units per 1 base unit, so convert, then rescale minor
+    // units in case the two currencies carry different decimals.
+    const r = l.currency === base ? 1 : planningRate(l, base);
+    if (!r) return null;
+    const k = minor(base) / minor(l.currency);
+    allocated += Math.round((l.allocated / r) * k);
+    spent += Math.round((l.spent / r) * k);
+  }
+  return { currency: base, approx: true, allocated, spent, remaining: allocated - spent };
+}
+
+// Leaf categories that have gone over, with their leg for context.
+function overspends(tree) {
+  const out = [];
+  for (const leg of tree) {
+    const walk = (n) => {
+      if (!n.kids.length && n.over) out.push({ node: n, leg });
+      n.kids.forEach(walk);
+    };
+    leg.kids.forEach(walk);
+  }
+  return out;
+}
+
+const pctOf = (spent, allocated) => (allocated > 0 ? Math.round((spent / allocated) * 100) : (spent > 0 ? 100 : 0));
+
+function overview(b, tree) {
+  const time = programmeTime(b);
+  const totals = programmeTotals(b, tree);
+  const over = overspends(tree);
+  const floats = cashFloat();
+
+  let timeLine = '';
+  if (time) {
+    const label = time.phase === 'before'
+      ? `Starts in ${time.days} day${time.days === 1 ? '' : 's'}`
+      : time.phase === 'after'
+        ? `Finished · ${time.total} days`
+        : `Day ${time.dayN} of ${time.total} · ${time.left} to go`;
+    timeLine = `<div class="ov-time">
+        <span class="ov-time-label">${label}</span>
+        <span class="ov-time-track"><span style="width:${time.pct}%"></span></span>
+      </div>`;
+  }
+
+  let head = '';
+  if (totals) {
+    const pct = pctOf(totals.spent, totals.allocated);
+    const isOver = totals.remaining < 0;
+    head = `<div class="ov-head ${isOver ? 'over' : ''}">
+        <span class="ov-left num">${totals.approx ? '≈ ' : ''}${fmt(totals.remaining, totals.currency)}</span>
+        <span class="ov-left-label">${isOver ? 'over budget' : 'left'}${tree.length > 1 ? ' across all legs' : ''}</span>
+        <span class="ov-sub num">${fmt(totals.spent, totals.currency)} of ${fmt(totals.allocated, totals.currency)} spent · ${pct}%${
+          time && time.phase === 'during' ? ` with ${Math.round(time.pct)}% of the programme gone` : ''}</span>
+        <span class="ov-track"><span class="gauge-fill" style="width:${Math.min(100, pct)}%"></span>${
+          time && time.phase === 'during' ? `<span class="pace-tick" style="left:${time.pct}%"></span>` : ''}</span>
+        ${totals.approx ? '<span class="ov-note">Converted at the planning rates. Each leg below is exact in its own currency.</span>' : ''}
+      </div>`;
+  }
+
+  const overHtml = over.length
+    ? `<div class="ov-block">
+        <span class="ov-block-label">Over budget</span>
+        <div class="ov-chips">${over.map(({ node, leg }) =>
+          `<button class="ov-chip over" type="button" data-cat="${esc(node.id)}">${esc(node.name)}${
+            tree.length > 1 ? ` <span class="ov-chip-leg">${esc(leg.name)}</span>` : ''} <span class="num">${fmt(node.remaining, node.currency)}</span></button>`).join('')}</div>
+      </div>`
+    : '';
+
+  const cashHtml = `<div class="ov-block">
+      <span class="ov-block-label">Your cash on hand</span>
+      ${floats.length
+        ? `<div class="ov-chips">${floats.map((f) =>
+            `<span class="ov-chip ${f.amount < 0 ? 'over' : ''}"><span class="num">${fmt(f.amount, f.currency)}</span></span>`).join('')}</div>`
+        : '<span class="ov-none">None recorded. Log a withdrawal or exchange from Cash when you draw money.</span>'}
+    </div>`;
+
+  const card = el(`<section class="overview" aria-label="Budget overview">${timeLine}${head}${overHtml}${cashHtml}</section>`);
+  card.querySelectorAll('[data-cat]').forEach((btn) =>
+    btn.addEventListener('click', () => openCategory(btn.dataset.cat)));
+  return card;
+}
+
+// Remembered per leg across re-renders and restarts: sync redraws the screen
+// every time it lands, and an accordion that snaps shut under your thumb is
+// worse than no accordion. One-leg budgets open by default; there is nothing
+// to choose between.
+function legIsOpen(legId, legCount) {
+  const v = state.legOpen[legId];
+  return typeof v === 'boolean' ? v : legCount === 1;
+}
+
+function legPanel(b, leg, legCount, time) {
+  const base = b.base_currency || 'NZD';
+  const rate = planningRate(leg, base);
+  const nzd = leg.currency !== base && rate
+    ? Math.round((leg.remaining / rate) * (minor(base) / minor(leg.currency))) : null;
+  const pct = pctOf(leg.spent, leg.allocated);
+  const count = entryCount(leg.id);
+  const pace = time && time.phase === 'during';
+  const ahead = pace && !leg.over && pct > time.pct + 10;
+
+  const d = el(`
+    <details class="leg ${leg.over ? 'over' : ''} ${ahead ? 'ahead' : ''}" ${legIsOpen(leg.id, legCount) ? 'open' : ''}>
+      <summary class="leg-head">
+        <span class="leg-top">
+          <span class="leg-name">${esc(leg.name)}${leg.currency ? ` <span class="leg-cur">${esc(leg.currency)}</span>` : ''}</span>
+          <span class="leg-left num">${fmt(leg.remaining, leg.currency)}</span>
+        </span>
+        <span class="leg-meta num">${fmt(leg.spent, leg.currency)} of ${fmt(leg.allocated, leg.currency)} · ${pct}% spent${
+          ahead ? ' · <strong>ahead of the calendar</strong>' : ''}${
+          nzd !== null ? ` · ≈ ${fmt(nzd, base)} left` : ''}</span>
+        <span class="leg-track"><span class="gauge-fill" style="width:${Math.min(100, pct)}%"></span>${
+          pace ? `<span class="pace-tick" style="left:${time.pct}%" title="Today"></span>` : ''}</span>
+        <span class="leg-chev" aria-hidden="true"></span>
+      </summary>
+      <div class="leg-body"></div>
+    </details>`);
+
+  d.addEventListener('toggle', () => {
+    state.legOpen[leg.id] = d.open;
+    putMeta('legOpen', state.legOpen).catch(() => {});
+  });
+
+  const body = d.querySelector('.leg-body');
+  const list = el('<div class="gauge-list"></div>');
+  const walk = (n) => {
+    const leaf = !n.kids.length;
+    const c = entryCount(n.id);
+    const g = el(`
+      <button class="gauge d${n.depth} ${n.over ? 'over' : ''}" type="button" ${leaf ? '' : 'data-parent="1"'}>
+        <span class="gauge-top">
+          <span class="gauge-name">${esc(n.name)}</span>
+          <span class="gauge-left num">${fmt(n.remaining, n.currency)}</span>
+        </span>
+        <span class="gauge-meta num">${fmt(n.spent, n.currency)} of ${fmt(n.allocated, n.currency)} spent${
+          c ? ` · ${c} entr${c === 1 ? 'y' : 'ies'}` : ''}</span>
+        <span class="gauge-track"><span class="gauge-fill" style="width:${n.pct}%"></span></span>
+      </button>`);
+    // Tapping a category opens its own history rather than the spend form.
+    // Logging is still one tap from the dock, and this is where an instructor
+    // goes to answer "did I already put the Cusco bus in?".
+    g.addEventListener('click', () => openCategory(n));
+    list.append(g);
+    n.kids.forEach(walk);
+  };
+  leg.kids.forEach(walk);
+  if (!leg.kids.length) list.append(el('<div class="empty">No categories in this leg yet.</div>'));
+  body.append(list);
+
+  if (count) {
+    const all = el(`<button class="leg-entries" type="button">See all ${count} ${esc(leg.name)} entr${count === 1 ? 'y' : 'ies'}</button>`);
+    all.addEventListener('click', () => openCategory(leg));
+    body.append(all);
+  }
+  return d;
 }
 
 /* ---------------- sheet ---------------- */
@@ -1159,7 +1309,7 @@ const isMine = (e) => !!state.email
 
 // Filters survive a trip into an entry and back, so "Back" returns to the list
 // you were actually looking at rather than resetting it.
-const historyState = { q: '', mine: false, catId: '', limit: PAGE };
+const historyState = { q: '', mine: false, catId: '', limit: PAGE, open: {}, limits: {} };
 const catStates = new Map();
 
 // Everything a row could plausibly be searched by, in one lowercased string.
@@ -1207,9 +1357,9 @@ function multiLeg() {
   return !!b && b.categories.filter((c) => !c.parent_id).length > 1;
 }
 
-function entryRow(e, { voided, tokens, back }) {
+function entryRow(e, { voided, tokens, back, grouped = false }) {
   const cat = catById()[e.category_id];
-  const entryLeg = multiLeg() && e.category_id ? legOf(e.category_id) : null;
+  const entryLeg = !grouped && multiLeg() && e.category_id ? legOf(e.category_id) : null;
   const label = e.entry_type === 'expense' ? (cat ? cat.name : 'Spend')
     : (TYPE_LABEL[e.entry_type] || e.entry_type);
   const isVoid = voided.has(e.id);
@@ -1259,7 +1409,7 @@ function openEntries(opts = {}) {
     st = catStates.get(node.id);
   } else {
     st = historyState;
-    if (opts.fresh) Object.assign(st, { q: '', mine: false, catId: '', limit: PAGE });
+    if (opts.fresh) Object.assign(st, { q: '', mine: false, catId: '', limit: PAGE, limits: {} });
   }
 
   const scope = node ? descendantIds(node.id) : null;
@@ -1331,6 +1481,30 @@ function openEntries(opts = {}) {
     const curs = [...new Set(spend.map((e) => e.currency))];
     const total = curs.length === 1 ? spend.reduce((n, e) => n + e.amount, 0) : null;
 
+    // The whole-budget view is grouped by leg, one accordion each, so Peru and
+    // Ecuador never interleave and each group can carry an exact total in its
+    // own currency. A category-scoped sheet is already inside one leg.
+    if (!node) {
+      more.hidden = true;
+      count.innerHTML = rows.length
+        ? `${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}${
+            total ? ` · <span class="num">${fmt(total, curs[0])}</span> spent` : ''}`
+        : '';
+      list.innerHTML = '';
+      const filtered = !!(tokens.length || st.mine || st.catId);
+      if (!rows.length) {
+        list.append(el(`<div class="empty">${filtered
+          ? 'Nothing matches that. Try fewer words, or clear the filters.'
+          : 'Nothing logged yet.'}</div>`));
+        hint.hidden = true;
+        return;
+      }
+      const groups = entryGroups(rows, voided);
+      for (const g of groups) list.append(entryGroup(g, { st, voided, tokens, filtered, single: groups.length === 1, back: reopen, redraw: draw }));
+      hint.hidden = false;
+      return;
+    }
+
     const shown = rows.slice(0, st.limit);
     count.innerHTML = rows.length
       ? `${rows.length} entr${rows.length === 1 ? 'y' : 'ies'}${
@@ -1356,6 +1530,7 @@ function openEntries(opts = {}) {
   q.addEventListener('input', () => {
     st.q = q.value;
     st.limit = PAGE;
+    st.limits = {};
     // Re-filtering the whole ledger on every keystroke is cheap at programme
     // scale, but a phone in the field is not a laptop.
     clearTimeout(t);
@@ -1388,6 +1563,68 @@ function openEntries(opts = {}) {
 
   draw();
   openSheet(wrap);
+}
+
+// Rows bucketed by leg, in the leg order the admin set. Cash movements belong
+// to no category, so they get their own group at the end, and anything whose
+// category has since been deleted lands in "Other" rather than vanishing.
+function entryGroups(rows, voided) {
+  const tree = categoryTree();
+  const groups = new Map(tree.map((l) => [l.id, { id: l.id, name: l.name, currency: l.currency, rows: [] }]));
+  const cash = { id: '_cash', name: 'Cash movements', currency: null, rows: [] };
+  const other = { id: '_other', name: 'Other', currency: null, rows: [] };
+  for (const e of rows) {
+    if (!e.category_id) { cash.rows.push(e); continue; }
+    const leg = legOf(e.category_id);
+    (leg && groups.get(leg.id) ? groups.get(leg.id) : other).rows.push(e);
+  }
+  const out = [...groups.values(), other, cash].filter((g) => g.rows.length);
+  for (const g of out) {
+    // budget_amount is already in the leg's currency, whatever the receipt was
+    // paid in, so a leg's spend total is exact. Cash and Other have no single
+    // currency, so they show a count only.
+    g.spent = g.currency
+      ? g.rows.filter((e) => e.entry_type === 'expense' && !voided.has(e.id)).reduce((n, e) => n + e.budget_amount, 0)
+      : null;
+  }
+  return out;
+}
+
+function entryGroup(g, { st, voided, tokens, filtered, single, back, redraw }) {
+  // A search or filter opens every group that has a hit, or the matches would
+  // sit hidden behind a closed header. Otherwise the instructor's own choice
+  // stands, and a lone group opens by itself.
+  const open = filtered || single || !!st.open[g.id];
+  const limit = st.limits[g.id] || PAGE;
+  const shown = g.rows.slice(0, limit);
+  const mine = g.rows.filter((e) => isMine(e)).length;
+
+  const d = el(`
+    <details class="egroup" ${open ? 'open' : ''}>
+      <summary class="egroup-head">
+        <span class="egroup-name">${esc(g.name)}${g.currency ? ` <span class="leg-cur">${esc(g.currency)}</span>` : ''}</span>
+        <span class="egroup-meta num">${g.rows.length} entr${g.rows.length === 1 ? 'y' : 'ies'}${
+          !st.mine && mine && mine < g.rows.length ? ` · ${mine} yours` : ''}${
+          g.spent !== null ? ` · ${fmt(g.spent, g.currency)} spent` : ''}</span>
+        <span class="leg-chev" aria-hidden="true"></span>
+      </summary>
+      <div class="egroup-body"></div>
+    </details>`);
+
+  d.addEventListener('toggle', () => {
+    // Only remember choices made with nothing filtered, so a search that forced
+    // everything open doesn't leave it all open afterwards.
+    if (!filtered && !single) st.open[g.id] = d.open;
+  });
+
+  const body = d.querySelector('.egroup-body');
+  for (const e of shown) body.append(entryRow(e, { voided, tokens, back, grouped: true }));
+  if (shown.length < g.rows.length) {
+    const more = el(`<button class="ghost small" type="button">Show ${Math.min(PAGE, g.rows.length - shown.length)} more of ${g.rows.length}</button>`);
+    more.addEventListener('click', () => { st.limits[g.id] = limit + PAGE; st.open[g.id] = true; redraw(); });
+    body.append(more);
+  }
+  return d;
 }
 
 // Tree nodes carry computed balances, so they are snapshots. Anything that
@@ -1704,6 +1941,8 @@ async function boot() {
   state.budgets = Array.isArray(cached) ? cached : [];
   invalidateCatIndex();
   state.email = (await getMeta('email')) || null;
+  const legOpen = await getMeta('legOpen').catch(() => null);
+  state.legOpen = legOpen && typeof legOpen === 'object' ? legOpen : {};
   state.entries = await allEntries();
   state.budgetId = (await getMeta('budgetId')) || state.budgets[0]?.id || null;
   render();
@@ -1731,9 +1970,12 @@ async function seedDemo() {
   // subcategories. The old flat seed predates that and rendered nothing.
   const cat = (id, name, allocated, sort, parent_id = null) =>
     ({ id, budget_id: 'bud_peru_2026', name, allocated, sort_order: sort, parent_id, rates: {} });
+  // Dates sit around today so the overview's time line and pace ticks show.
+  const shift = (n) => new Date(Date.now() + n * 86_400_000).toISOString().slice(0, 10);
   state.budgets = [{
     id: 'bud_peru_2026', name: 'Peru — Feb 2026', currency: 'PEN',
     base_currency: 'NZD', default_rate: 3.34,
+    starts_on: shift(-12), ends_on: shift(18),
     categories: [
       { ...cat('leg_peru', 'Peru', 0, 1), currency: 'PEN', rates: { USD: 3.34, NZD: 2.02 } },
       cat('cat_food', 'Food', 0, 1, 'leg_peru'),
@@ -1744,6 +1986,10 @@ async function seedDemo() {
       cat('cat_activity', 'Activities', 192970, 4, 'leg_peru'),
       cat('cat_misc', 'Misc', 50000, 5, 'leg_peru'),
       cat('cat_firstaid', 'First aid', 16800, 6, 'leg_peru'),
+      { ...cat('leg_ecuador', 'Ecuador', 0, 2), currency: 'USD', rates: { NZD: 0.6 } },
+      cat('cat_ec_food', 'Food', 180000, 1, 'leg_ecuador'),
+      cat('cat_ec_transport', 'Transport', 4000, 2, 'leg_ecuador'),
+      cat('cat_ec_activity', 'Activities', 60000, 3, 'leg_ecuador'),
     ],
   }];
   state.budgetId = 'bud_peru_2026';
@@ -1765,12 +2011,14 @@ async function seedDemo() {
       ['2026-02-10', 'cat_transport', 'Bus Cusco to Puno', 58000, 'card', 'katie'],
       ['2026-02-11', 'cat_food_group', 'Group lunch, Puno market', 28900, 'cash', 'katie'],
       ['2026-02-12', 'cat_misc', 'Replacement dry bag', 15900, 'cash', 'sam'],
+      ['2026-02-20', 'cat_ec_food', 'Group dinner, Quito', 21000, 'card', 'katie', 'USD'],
+      ['2026-02-21', 'cat_ec_transport', 'Bus Quito to Baños', 6500, 'cash', 'sam', 'USD'],
     ];
-    for (const [d, c, desc, amt, method, who] of rows) {
+    for (const [d, c, desc, amt, method, who, cur = 'PEN'] of rows) {
       await putEntry({
         id: `demo_${c}_${d}_${amt}`, budget_id: 'bud_peru_2026', category_id: c,
         email: `${who}@pacificdiscovery.org`, entry_type: 'expense', group_id: null,
-        spent_on: d, amount: amt, currency: 'PEN', rate: 1, budget_amount: amt,
+        spent_on: d, amount: amt, currency: cur, rate: 1, budget_amount: amt,
         payment_method: method, description: desc, receipt_key: null, corrects_id: null,
         created_at: `${d}T12:00:00.000Z`, pending: 0,
       });
